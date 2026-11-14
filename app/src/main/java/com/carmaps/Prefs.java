@@ -1,0 +1,76 @@
+package com.carmaps;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+
+/** Everything the app remembers. */
+final class Prefs {
+
+
+    private final SharedPreferences p;
+
+    Prefs(Context c) {
+        p = c.getApplicationContext().getSharedPreferences("carmaps", Context.MODE_PRIVATE);
+    }
+
+    boolean enabled() { return p.getBoolean("enabled", false); }
+    void setEnabled(boolean v) { p.edit().putBoolean("enabled", v).apply(); }
+
+    boolean startOnBoot() { return p.getBoolean("boot", true); }
+    void setStartOnBoot(boolean v) { p.edit().putBoolean("boot", v).apply(); }
+
+    boolean avoidTolls() { return p.getBoolean("avoidTolls", false); }
+    void setAvoidTolls(boolean v) { p.edit().putBoolean("avoidTolls", v).apply(); }
+
+    boolean avoidHighways() { return p.getBoolean("avoidHighways", false); }
+    void setAvoidHighways(boolean v) { p.edit().putBoolean("avoidHighways", v).apply(); }
+
+    boolean voice() { return p.getBoolean("voice", true); }
+    void setVoice(boolean v) { p.edit().putBoolean("voice", v).apply(); }
+
+    // ---- HUD
+
+    boolean hud() { return p.getBoolean("hud", true); }
+    void setHud(boolean v) { p.edit().putBoolean("hud", v).apply(); }
+
+    boolean hudMap() { return p.getBoolean("hudMiniMap", true); }
+    void setHudMap(boolean v) { p.edit().putBoolean("hudMiniMap", v).apply(); }
+
+    /** -1: find it automatically. */
+    int hudDisplay() { return p.getInt("hudDisplay", -1); }
+    void setHudDisplay(int v) { p.edit().putInt("hudDisplay", v).apply(); }
+
+    /** 0 = far left, 100 = far right. */
+    int hudX() { return p.getInt("hudX", 50); }
+    void setHudX(int v) { p.edit().putInt("hudX", v).apply(); }
+
+    /** 0 = top, 100 = bottom. */
+    int hudY() { return p.getInt("hudY", 50); }
+    void setHudY(int v) { p.edit().putInt("hudY", v).apply(); }
+
+    /** Panel height as a percentage of the HUD's height. */
+    int hudSize() { return p.getInt("hudSize", 70); }
+    void setHudSize(int v) { p.edit().putInt("hudSize", v).apply(); }
+
+    int hudOpacity() { return p.getInt("hudOpacity", 100); }
+    void setHudOpacity(int v) { p.edit().putInt("hudOpacity", v).apply(); }
+
+    // ---- floating window
+
+    boolean collapsed() { return p.getBoolean("collapsed", false); }
+    void setCollapsed(boolean v) { p.edit().putBoolean("collapsed", v).apply(); }
+
+    /** Top-left corner and size of the map when shown; null if never placed. */
+    int[] window() {
+        if (!p.contains("winW")) return null;
+        return new int[]{p.getInt("winX", 0), p.getInt("winY", 0), p.getInt("winW", 0), p.getInt("winH", 0)};
+    }
+
+    void setWindow(int x, int y, int w, int h) {
+        p.edit().putInt("winX", x).putInt("winY", y).putInt("winW", w).putInt("winH", h).apply();
+    }
+
+    void clearWindow() {
+        p.edit().remove("winX").remove("winY").remove("winW").remove("winH").apply();
+    }
+}
