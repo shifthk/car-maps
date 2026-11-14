@@ -486,7 +486,11 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
 
     private void showProgress(Nav.Progress p) {
         hud.setNav(p);
-        String title = p.offRoute ? "Rerouting…" : Geo.distance(p.distToManeuver) + "  ·  " + p.text;
+        if (p.offRoute) {
+            window.showTurn(null, "Rerouting…", "Finding a new route");
+            return;
+        }
+        String title = Geo.distance(p.distToManeuver) + "  ·  " + p.text;
         String sub = Geo.clock(p.eta) + " arrival  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist)
                 + (nav != null && nav.route().google ? "  ·  Google's route" : "  ·  own route");
         window.showTurn(Maneuvers.of(p.maneuver), title, sub);

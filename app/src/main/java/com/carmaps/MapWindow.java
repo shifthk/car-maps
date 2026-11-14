@@ -321,16 +321,16 @@ final class MapWindow {
 
     /** "Guide on HUD to X" with a Start button. */
     void showOffer(String title, String sub) {
-        setBar(0xFF22303C, null, title, sub, "Start", host::startNav);
+        setBar(0xFF22303C, null, title, sub, "Start", host::startNav, false);
     }
 
     void showMessage(String title, String sub) {
-        setBar(0xFF22303C, null, title, sub, null, null);
+        setBar(0xFF22303C, null, title, sub, null, null, false);
     }
 
-    /** The next turn while guiding. */
+    /** The next turn while guiding; {@code turn} is null while rerouting. */
     void showTurn(Maneuvers.Icon turn, String title, String sub) {
-        setBar(0xFF0C5A3C, turn, title, sub, "End", host::stopNav);
+        setBar(0xFF0C5A3C, turn, title, sub, "End", host::stopNav, true);
         icon.setActive(true);
     }
 
@@ -339,7 +339,8 @@ final class MapWindow {
         icon.setActive(false);
     }
 
-    private void setBar(int color, Maneuvers.Icon turn, String title, String sub, String action, Runnable run) {
+    private void setBar(int color, Maneuvers.Icon turn, String title, String sub, String action, Runnable run,
+                        boolean guiding) {
         bar.setBackgroundColor(color);
         barIcon.setIcon(turn);
         barIcon.setVisibility(turn == null ? View.GONE : View.VISIBLE);
@@ -348,10 +349,10 @@ final class MapWindow {
         barSub.setVisibility(sub == null || sub.isEmpty() ? View.GONE : View.VISIBLE);
         barButton.setText(action == null ? "" : action);
         barButton.setVisibility(action == null ? View.GONE : View.VISIBLE);
-        barButton.setBackgroundColor(turn == null ? 0xFF1A73E8 : 0xFFD9453A);
+        barButton.setBackgroundColor(guiding ? 0xFFD9453A : 0xFF1A73E8);
         barAction = run;
         bar.setVisibility(View.VISIBLE);
-        if (turn == null) icon.setActive(false);
+        if (!guiding) icon.setActive(false);
     }
 
     // ------------------------------------------------------------------ the page

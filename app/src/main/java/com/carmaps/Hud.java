@@ -60,6 +60,7 @@ final class Hud {
     private Nav.Route route;
     private Nav.Progress progress;
     private String dist = "", text = "", footer = "";
+    /** Null while rerouting. */
     private Maneuvers.Icon icon = Maneuvers.of("");
     /** Why the HUD isn't showing, for the settings screen. */
     static volatile String status = "Not started";
@@ -167,9 +168,14 @@ final class Hud {
         boolean was = navigating;
         navigating = p != null;
         progress = p;
-        if (p != null) {
+        if (p != null && p.offRoute) {
+            // The old route's turn no longer applies: show nothing to follow until the new route arrives.
+            icon = null;
+            dist = "Rerouting";
+            text = "Finding a new route";
+        } else if (p != null) {
             icon = Maneuvers.of(p.maneuver);
-            dist = p.offRoute ? "Rerouting" : Geo.distance(p.distToManeuver);
+            dist = Geo.distance(p.distToManeuver);
             text = p.text;
             footer = Geo.clock(p.eta) + "  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist);
         }
@@ -412,8 +418,11 @@ final class Hud {
                 f = "14:32  ·  25 min  ·  12 km";
             }
             float iconSize = h * 0.64f;
-            Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
-            float textLeft = iconSize + h * 0.06f;
+            float textLeft = h * 0.06f;
+            if (ic != null) {
+                Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
+                textLeft += iconSize;
+            }
             big.setTextSize(h * 0.32f);
             c.drawText(d, textLeft, h * 0.36f, big);
             small.setTextSize(h * 0.15f);
@@ -445,6 +454,7 @@ final class Hud {
                 if (testing) drawSample(c, w, h, cx, cy);
                 return;
             }
+            if (p.offRoute) return;   // the old route would be drawn from the wrong place: leave it blank
             double k = cy / VIEW_M;   // pixels per metre: VIEW_M metres of road between the car and the top edge
             double b = Math.toRadians(p.offRoute ? bearing : p.snapBearing);
             double cos = Math.cos(b), sin = Math.sin(b);
