@@ -102,6 +102,9 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private boolean navigating;
     private int routeSeq;
     private boolean routePending;
+    /** The request the page has been asked to answer with Google's route, or 0. */
+    private int googleSeq;
+    private static final long GOOGLE_WAIT_MS = 12000;
     private long lastRouteRequest;
     private int offRouteCount;
     /** Which spoken prompts have been given for the coming turn: 0 none, 1 the early one, 2 the final one. */
@@ -367,6 +370,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
 
     private void endNav() {
         routeSeq++;
+        googleSeq = 0;
         routePending = false;
         navigating = false;
         nav = null;
@@ -387,9 +391,59 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             return;
         }
         final int seq = ++routeSeq;
-        final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
         routePending = true;
         lastRouteRequest = SystemClock.elapsedRealtime();
+        // First choice: the route Google itself draws, from where the car is now. When the car has
+        // left the route, Google's old route is no use, so that request must start from here.
+        googleSeq = seq;
+        window.requestGoogleRoute(from.getLatitude(), from.getLongitude(), navigating);
+        main.postDelayed(() -> {
+            if (googleSeq == seq) {
+                Log.w(TAG, "The page didn't answer with Google's route");
+                googleSeq = 0;
+                if (seq == routeSeq) requestOwnRoute(seq, from, to);
+            }
+        }, GOOGLE_WAIT_MS);
+    }
+
+    @Override
+    public void onGoogleRoute(String line, double seconds, double metres) {
+        final int seq = googleSeq;
+        final Router.Dest to = dest;
+        final Location from = last;
+        if (seq == 0 || seq != routeSeq || to == null || from == null) return;
+        googleSeq = 0;
+        if (line.isEmpty()) {
+            Log.w(TAG, "The page couldn't supply Google's route");
+            requestOwnRoute(seq, from, to);
+            return;
+        }
+        io.execute(() -> {
+            Nav.Route route = null;
+            try {
+                org.json.JSONObject trip = Router.trace(line, metres);
+                if (trip != null) {
+                    route = Nav.Route.parse(trip);
+                    route.google = true;
+                    route.scaleDuration(seconds);
+                } else {
+                    Log.w(TAG, "Google's route couldn't be matched to OpenStreetMap's roads");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Matching Google's route failed", e);
+            }
+            final Nav.Route matched = route;
+            main.post(() -> {
+                if (seq != routeSeq) return;
+                if (matched != null) onRoute(matched);
+                else requestOwnRoute(seq, from, to);
+            });
+        });
+    }
+
+    /** The fallback: OpenStreetMap picks the roads itself. */
+    private void requestOwnRoute(int seq, Location from, Router.Dest to) {
+        final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
         io.execute(() -> {
             try {
                 Nav.Route route = Nav.Route.parse(Router.route(from, to, tolls, highways));
@@ -433,7 +487,8 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private void showProgress(Nav.Progress p) {
         hud.setNav(p);
         String title = p.offRoute ? "Rerouting…" : Geo.distance(p.distToManeuver) + "  ·  " + p.text;
-        String sub = Geo.clock(p.eta) + " arrival  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist);
+        String sub = Geo.clock(p.eta) + " arrival  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist)
+                + (nav != null && nav.route().google ? "  ·  Google's route" : "  ·  own route");
         window.showTurn(Maneuvers.of(p.maneuver), title, sub);
     }
 

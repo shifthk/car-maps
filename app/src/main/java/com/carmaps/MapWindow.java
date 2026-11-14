@@ -52,6 +52,13 @@ final class MapWindow {
         /** The page is no longer showing directions. */
         void onNoDestination();
 
+        /**
+         * Google's own route, asked for with {@link #requestGoogleRoute}: its line as an encoded
+         * polyline (six decimals), its time in traffic and its length. The line is empty if the page
+         * couldn't supply it.
+         */
+        void onGoogleRoute(String line, double seconds, double metres);
+
         void startNav();
 
         void stopNav();
@@ -94,6 +101,35 @@ final class MapWindow {
             + "var k=t.match(new RegExp('\"'+id+'\",\\\\[null,null,(-?[0-9.]+),(-?[0-9.]+)\\\\]'));"
             + "if(k)Car.dest(name,+k[1],+k[2]);else Car.dest(name,NaN,NaN)})"
             + ".catch(function(){Car.dest(name,NaN,NaN)})})()";
+
+
+    /**
+     * Runs in the Google Maps page: asks Google for its route again, this time with the route's
+     * full line, starting from where the car is now. The page's own request is reused with two
+     * changes: the starting point, and one extra flag ("14b1") that makes the answer include the line
+     * of every route. The first driving route (the one Google shows selected) is handed back as an
+     * encoded polyline, with Google's distance and its time in current traffic.
+     */
+    private static final String ROUTE_JS = "(function(lat,lng,must){"
+            + "function fail(){Car.route('',0,0)}"
+            + "var d=window.__carmapsDir;if(!d){fail();return}"
+            + "d=d.replace(/%21/g,'!');"
+            + "var o=/(pb=!1m\\d+!3m2)!3d-?[0-9.]+!4d-?[0-9.]+/;"
+            + "if(o.test(d))d=d.replace(o,'$1!3d'+lat+'!4d'+lng);else if(must){fail();return}"
+            + "var m=d.match(/!6m(\\d+)/);if(!m){fail();return}"
+            + "d=d.replace('!6m'+m[1],'!6m'+(+m[1]+1)+'!14b1');"
+            + "fetch(d,{credentials:'include'}).then(function(r){return r.text()}).then(function(t){"
+            + "var j=JSON.parse(t.slice(t.indexOf('\\n')+1)),rs=j[0][1],g=j[0][7],k=-1;"
+            + "for(var i=0;i<rs.length;i++){if(rs[i][0][0]===0&&g[i]&&g[i][0]&&g[i][1]){k=i;break}}"
+            + "if(k<0){fail();return}"
+            + "var a=g[k][0],b=g[k][1],n=Math.min(a.length,b.length),skip=Math.ceil(n/6000),la=0,lo=0,pl=0,pg=0,out='';"
+            + "function e(v){v=v<0?~(v<<1):(v<<1);var s='';"
+            + "while(v>=32){s+=String.fromCharCode((32|(v&31))+63);v>>>=5}return s+String.fromCharCode(v+63)}"
+            + "for(var q=0;q<n;q++){la+=a[q];lo+=b[q];if(q%skip&&q!==n-1)continue;"
+            + "var x=Math.round(la/10),y=Math.round(lo/10);out+=e(x-pl)+e(y-pg);pl=x;pg=y}"
+            + "var s=rs[k][0];"
+            + "Car.route(out,(s[10]&&s[10][0]&&s[10][0][0])||(s[3]&&s[3][0])||0,(s[2]&&s[2][0])||0)"
+            + "}).catch(fail)})";
 
     private final Context ui;
     private final WindowManager wm;
@@ -419,6 +455,20 @@ final class MapWindow {
 
     private boolean retryDest;
 
+    /**
+     * Asks the page for Google's route from this position; the answer arrives at
+     * {@link Host#onGoogleRoute}. {@code mustBeFresh}: fail rather than hand back the route from
+     * the old starting point (when the car has left that route, the old one is no use).
+     */
+    void requestGoogleRoute(double lat, double lng, boolean mustBeFresh) {
+        if (web == null || destroyed) {
+            host.onGoogleRoute("", 0, 0);
+            return;
+        }
+        web.evaluateJavascript(SETUP_JS, null);
+        web.evaluateJavascript(ROUTE_JS + String.format(java.util.Locale.US, "(%.6f,%.6f,%b)", lat, lng, mustBeFresh), null);
+    }
+
     /** The page hadn't finished fetching its directions: look again on the next check. */
     void retryDestination() {
         retryDest = true;
@@ -434,6 +484,11 @@ final class MapWindow {
         @JavascriptInterface
         public void dest(String name, double lat, double lng) {
             main.post(() -> host.onDestination(name, lat, lng));
+        }
+
+        @JavascriptInterface
+        public void route(String line, double seconds, double metres) {
+            main.post(() -> host.onGoogleRoute(line == null ? "" : line, seconds, metres));
         }
 
         @JavascriptInterface

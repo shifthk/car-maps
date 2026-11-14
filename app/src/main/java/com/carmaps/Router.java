@@ -25,6 +25,7 @@ import java.util.Locale;
 final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
+    private static final String TRACE = "https://valhalla1.openstreetmap.de/trace_route";
     private static final String SEARCH = "https://nominatim.openstreetmap.org/search";
     private static final String AGENT = "CarMaps/1.0 (Android; personal in-car navigation)";
 
@@ -72,6 +73,44 @@ final class Router {
         JSONObject trip = res.optJSONObject("trip");
         if (trip == null) throw new IOException("No route found");
         return trip;
+    }
+
+    /**
+     * Turn-by-turn directions along a line someone else drew (Google's route): the line is matched
+     * onto OpenStreetMap's roads and described as a route.
+     *
+     * @param line    encoded polyline, six decimals
+     * @param metres  how long the line is supposed to be
+     * @return Valhalla's "trip" along the line, or null if the roads it found don't add up to the line
+     */
+    static JSONObject trace(String line, double metres) throws IOException, JSONException {
+        JSONObject body = new JSONObject()
+                .put("encoded_polyline", line)
+                .put("costing", "auto")
+                .put("shape_match", "map_snap")
+                .put("units", "kilometers")
+                .put("language", language());
+        JSONObject res = new JSONObject(http("POST", TRACE, body.toString()));
+        // Where the line can't be followed in one go (it starts in a car park, say), the pieces come
+        // back separately: the first as "trip", the rest as "alternates". Take the longest.
+        JSONObject best = res.optJSONObject("trip");
+        JSONArray others = res.optJSONArray("alternates");
+        if (others != null) {
+            for (int i = 0; i < others.length(); i++) {
+                JSONObject t = others.getJSONObject(i).optJSONObject("trip");
+                if (t != null && (best == null || length(t) > length(best))) best = t;
+            }
+        }
+        if (best == null) return null;
+        double found = length(best) * 1000;
+        // A piece much shorter than the line means part of the route is missing; much longer means a detour.
+        if (metres > 0 && (found < metres * 0.9 || found > metres * 1.1)) return null;
+        return best;
+    }
+
+    private static double length(JSONObject trip) {
+        JSONObject summary = trip.optJSONObject("summary");
+        return summary == null ? 0 : summary.optDouble("length", 0);
     }
 
     /** @return {lat, lng} of the best match for a place name, or null */

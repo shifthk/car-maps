@@ -14,13 +14,13 @@ No API key or billing is needed.
 | Part | What it does |
 | --- | --- |
 | `MapWindow` | The overlay window and its `WebView` on google.com/maps. Reads the destination from the page while it shows directions. |
-| `Router` | Driving routes from OpenStreetMap data (the FOSSGIS Valhalla server), and Nominatim as a fallback to find a place by name. |
+| `Router` | Matches Google's route line onto OpenStreetMap roads for turn-by-turn instructions (the FOSSGIS Valhalla server); falls back to its own routes, and to Nominatim to find a place by name. |
 | `Nav` | Follows the route by GPS: snaps the position to the route line, finds the next turn, notices when the car leaves the route. |
 | `Hud` | Finds the HUD display and draws on it. |
 | `MapService` | Foreground service tying these together; asks for a new route when the car leaves the old one. |
 | `MainActivity` | Permissions and settings, including where the panel sits on the HUD. |
 
-**The HUD route is not Google's route.** The Google Maps website gives an app no route data, so guidance comes from OpenStreetMap. It can take different roads from the line Google draws, and its arrival time ignores traffic. Google's traffic-aware time stays visible in the window.
+**The HUD follows Google's route.** The Google Maps website gives an app no route data of its own, so the app asks the page for Google's route again, from where the car is, with one extra option that makes Google include the route's full line. That line is matched onto OpenStreetMap's roads (Valhalla's `trace_route`), which turns it into turn-by-turn instructions, and the arrival time is set to Google's time in traffic. The bar under the map says "Google's route" when this worked. If it doesn't (Google changes its page, or the line can't be matched), the app falls back to letting OpenStreetMap choose the roads itself, and the bar says "own route". Guidance always follows Google's first (default) route, even if another one is selected on the page. When the car leaves the route, Google is asked again from the car's new position.
 
 **Reading the destination.** The site's address only carries the place's name and ID. The coordinates come from the answer to the page's own directions request, which the app fetches again from inside the page. If Google changes that page, the app falls back to looking the name up in OpenStreetMap, which is less exact (the bar then says "approximate location").
 
