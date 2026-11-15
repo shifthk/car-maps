@@ -95,6 +95,10 @@ final class Prefs {
     int hudX() { return p.getInt("hudX", 50); }
     void setHudX(int v) { p.edit().putInt("hudX", v).apply(); }
 
+    /** Width of the empty gap between the directions and the mini map, as a percentage of the HUD's width. */
+    int hudGap() { return p.getInt("hudGap", 30); }
+    void setHudGap(int v) { p.edit().putInt("hudGap", v).apply(); }
+
     /** 0 = top, 100 = bottom. */
     int hudY() { return p.getInt("hudY", 50); }
     void setHudY(int v) { p.edit().putInt("hudY", v).apply(); }

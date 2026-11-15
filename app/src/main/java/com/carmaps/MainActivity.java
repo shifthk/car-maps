@@ -186,6 +186,7 @@ public class MainActivity extends Activity {
         choice("HUD display", displayNames.toArray(new String[0]), chosen,
                 i -> prefs.setHudDisplay(displayIds.get(i)));
 
+        slider("Gap in the middle (for the car's speed readout)", 0, 70, prefs.hudGap(), prefs::setHudGap);
         slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
         slider("Up / down", 0, 100, prefs.hudY(), prefs::setHudY);
         slider("Size", 30, 100, prefs.hudSize(), prefs::setHudSize);
@@ -197,7 +198,8 @@ public class MainActivity extends Activity {
             }
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
-        root.addView(note("Move the sliders while the sample is showing to place it. Black is unlit on a HUD, so "
+        root.addView(note("The directions sit to the left of the gap and the mini map to the right. Move the "
+                + "sliders while the sample is showing to place them. Black is unlit on a HUD, so "
                 + "the solid black behind the directions looks like nothing but hides whatever the car shows in "
                 + "that spot; the car's readouts elsewhere on the HUD stay. Blanking the whole HUD hides the "
                 + "car's speed readout too."));

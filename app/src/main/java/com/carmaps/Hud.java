@@ -431,8 +431,10 @@ final class Hud {
             if (!navigating && !testing) return;
             int[] r = rects(getWidth(), getHeight());
             int pad = Math.round(r[6] * 0.06f);
-            int right = r[5] > 0 ? r[3] + r[5] : r[0] + r[2];
-            c.drawRect(r[0] - pad, r[1] - pad, right + pad, r[1] + r[6] + pad, backing);
+            // Two separate patches, so the gap between them stays clear for the car's own readouts.
+            int inner = Math.min(pad, Math.max(0, (r[3] - r[0] - r[2]) / 2));
+            c.drawRect(r[0] - pad, r[1] - pad, r[0] + r[2] + inner, r[1] + r[6] + pad, backing);
+            if (r[5] > 0) c.drawRect(r[3] - inner, r[1] - pad, r[3] + r[5] + pad, r[1] + r[6] + pad, backing);
         }
 
         private boolean showMap() {
@@ -475,21 +477,28 @@ final class Hud {
             mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + p[6]);
         }
 
-        /** @return {info left, info top, info width, map left, map top, map width, height} */
+        /**
+         * The directions sit to the left of a gap and the mini map to the right of it; the gap is left
+         * empty for what the car itself shows in the middle of the HUD (its speed readout). The map's
+         * place is kept even when the map is off, so the gap stays where it was put.
+         *
+         * @return {info left, info top, info width, map left, map top, map width, height}
+         */
         private int[] rects(int w, int h) {
             int height = Math.max(48, Math.min(h, Math.round(h * prefs.hudSize() / 100f)));
             int infoW = Math.round(height * 2.6f);
-            int mapW = showMap() ? Math.round(height * 1.0f) : 0;
-            int gap = mapW > 0 ? Math.round(height * 0.08f) : 0;
-            int total = infoW + gap + mapW;
-            if (total > w) {
-                // Too wide for the HUD: the directions give way first.
+            int mapW = Math.round(height * 1.0f);
+            int smallest = Math.round(height * 0.08f);
+            int gap = Math.max(smallest, Math.round(w * prefs.hudGap() / 100f));
+            if (infoW + gap + mapW > w) {
+                // Too wide for the HUD: the directions narrow first, then the gap gives way.
+                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(height * 1.3f)));
                 infoW = Math.max(0, w - mapW - gap);
-                total = infoW + gap + mapW;
             }
+            int total = infoW + gap + mapW;
             int left = Math.round(Math.max(0, w - total) * prefs.hudX() / 100f);
             int top = Math.round(Math.max(0, h - height) * prefs.hudY() / 100f);
-            return new int[]{left, top, infoW, left + infoW + gap, top, mapW, height};
+            return new int[]{left, top, infoW, left + infoW + gap, top, showMap() ? mapW : 0, height};
         }
     }
 
