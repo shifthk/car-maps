@@ -6,13 +6,16 @@ import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.hardware.display.DisplayManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.Log;
@@ -29,9 +32,10 @@ import java.util.Locale;
  * Directions and a mini map (the route ahead as a line) on the head-up display.
  *
  * <p>The Zeekr 7X exposes its HUD to Android as a secondary display (1440 x 480; id 3 on the cars
- * checked). A transparent {@link Presentation} on that display draws over whatever the car itself
- * shows there. The HUD is a projection, so black means "no light": everything here is bright shapes
- * on black, and the parts of the HUD this panel doesn't cover are left untouched.</p>
+ * checked). The picture goes in an overlay window on that display, which sits above everything else
+ * shown there. The HUD is a projection, so black means "no light": everything here is bright shapes
+ * on black, and unless told to blank the whole HUD, the parts this panel doesn't cover are left
+ * see-through.</p>
  *
  * <p>How to find the display and put a window on it was learned from zeekr-shortcut-car (dts88) and
  * CAMCORDER (FerixzTanz), who worked it out on their own cars. No code is copied from either.</p>
@@ -50,6 +54,9 @@ final class Hud {
     private final DisplayManager dm;
     private final Handler main = new Handler(Looper.getMainLooper());
 
+    /** The window the picture is in: an overlay window (these two), or else a presentation. */
+    private WindowManager overlayWm;
+    private WindowManager.LayoutParams overlayLp;
     private Presentation presentation;
     private Panel panel;
     private int shownOn = -1;
@@ -212,6 +219,11 @@ final class Hud {
         return testing || (prefs.hud() && navigating);
     }
 
+    private boolean showing() {
+        if (panel == null) return false;
+        return presentation != null ? presentation.isShowing() : panel.isAttachedToWindow();
+    }
+
     private void evaluate() {
         main.removeCallbacks(evaluate);
         if (!wanted()) {
@@ -226,78 +238,140 @@ final class Hud {
             main.postDelayed(evaluate, RETRY_MS);
             return;
         }
-        if (presentation != null && presentation.isShowing() && shownOn == display.getDisplayId()) {
+        if (showing() && shownOn == display.getDisplayId()) {
             panel.applyPrefs();
             return;
         }
         dismiss();
         show(display);
-        if (presentation == null) main.postDelayed(evaluate, RETRY_MS);
+        if (panel == null) main.postDelayed(evaluate, RETRY_MS);
     }
 
     // ------------------------------------------------------------------ the window
 
+    /**
+     * First choice is an overlay window on the HUD's display: the "display over other apps" kind,
+     * which Android stacks above every ordinary window there, including whatever the car itself
+     * shows. It is the highest layer an installed app can use. If the car won't allow one on that
+     * display, a Presentation (an ordinary window on a second display) is the fallback; the car's
+     * own HUD items may then be drawn on top of it.
+     */
     private void show(Display display) {
-        // A Presentation is the documented way to draw on a secondary display. If the system won't
-        // give this app a presentation window there, an overlay window on that display is the fallback.
         Throwable failure = null;
-        for (int attempt = 0; attempt < 2 && presentation == null; attempt++) {
-            Presentation p = null;
-            Panel view = null;
+        if (Build.VERSION.SDK_INT >= 30 && Settings.canDrawOverlays(context)) {
             try {
-                p = new Presentation(context, display);
-                view = new Panel(p.getContext());
-                FrameLayout root = new FrameLayout(p.getContext());
-                root.setBackgroundColor(0);
-                root.addView(view, new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                p.setContentView(root);
-                Window window = p.getWindow();
-                if (window != null) {
-                    if (attempt == 1) window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
-                    window.addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                            | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
-                    window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                    window.setBackgroundDrawable(new ColorDrawable(0));
-                    WindowManager.LayoutParams attrs = window.getAttributes();
-                    attrs.alpha = prefs.hudOpacity() / 100f;
-                    window.setAttributes(attrs);
-                }
-                p.show();
-                presentation = p;
+                Context dc = context.createDisplayContext(display)
+                        .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null);
+                WindowManager wm = dc.getSystemService(WindowManager.class);
+                Panel view = new Panel(dc);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                        PixelFormat.TRANSLUCENT);
+                lp.alpha = prefs.hudOpacity() / 100f;
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                lp.setFitInsetsTypes(0);
+                wm.addView(view, lp);
+                overlayWm = wm;
+                overlayLp = lp;
                 panel = view;
                 shownOn = display.getDisplayId();
-                status = "Showing on display " + shownOn;
+                status = "Showing on display " + shownOn + ", on top of everything else";
+                view.applyPrefs();
+                return;
             } catch (Throwable t) {
                 failure = t;
-                if (p != null) {
-                    try {
-                        p.dismiss();
-                    } catch (RuntimeException ignored) {
-                        // never shown
-                    }
-                }
+                overlayWm = null;
+                overlayLp = null;
+                Log.w(TAG, "No overlay window on display " + display.getDisplayId() + "; trying a presentation", t);
             }
         }
-        if (presentation == null) {
+        Presentation p = null;
+        try {
+            p = new Presentation(context, display);
+            Panel view = new Panel(p.getContext());
+            FrameLayout root = new FrameLayout(p.getContext());
+            root.setBackgroundColor(0);
+            root.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            p.setContentView(root);
+            Window window = p.getWindow();
+            if (window != null) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                window.setBackgroundDrawable(new ColorDrawable(0));
+            }
+            p.show();
+            presentation = p;
+            panel = view;
+            shownOn = display.getDisplayId();
+            status = "Showing on display " + shownOn + " in an ordinary window (the car's own HUD items may cover it)";
+            view.applyPrefs();
+        } catch (Throwable t) {
+            failure = t;
+            if (p != null) {
+                try {
+                    p.dismiss();
+                } catch (RuntimeException ignored) {
+                    // never shown
+                }
+            }
             Log.e(TAG, "Couldn't open a window on display " + display.getDisplayId(), failure);
-            status = "Couldn't draw on display " + display.getDisplayId() + ": "
-                    + (failure == null ? "unknown" : failure.getMessage());
+            status = "Couldn't draw on display " + display.getDisplayId() + ": " + failure.getMessage();
         }
     }
 
     private void dismiss() {
         Presentation p = presentation;
         Panel v = panel;
+        WindowManager wm = overlayWm;
         presentation = null;
         panel = null;
+        overlayWm = null;
+        overlayLp = null;
         shownOn = -1;
+        if (wm != null && v != null) {
+            try {
+                wm.removeViewImmediate(v);
+            } catch (RuntimeException ignored) {
+                // the display went away and took the window with it
+            }
+        }
         if (p != null) {
             try {
                 p.dismiss();
             } catch (RuntimeException ignored) {
                 // the display went away and took the window with it
+            }
+        }
+    }
+
+    /** How bright the whole picture is: the window's opacity. */
+    private void applyAlpha() {
+        float alpha = prefs.hudOpacity() / 100f;
+        if (overlayWm != null && overlayLp != null && panel != null) {
+            if (overlayLp.alpha != alpha) {
+                overlayLp.alpha = alpha;
+                try {
+                    overlayWm.updateViewLayout(panel, overlayLp);
+                } catch (RuntimeException ignored) {
+                    // the window is gone; the next evaluate() rebuilds it
+                }
+            }
+            return;
+        }
+        Window window = presentation == null ? null : presentation.getWindow();
+        if (window != null) {
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            if (attrs.alpha != alpha) {
+                attrs.alpha = alpha;
+                window.setAttributes(attrs);
             }
         }
     }
@@ -329,15 +403,10 @@ final class Hud {
         }
 
         void applyPrefs() {
-            Window window = presentation == null ? null : presentation.getWindow();
-            if (window != null) {
-                WindowManager.LayoutParams attrs = window.getAttributes();
-                float alpha = prefs.hudOpacity() / 100f;
-                if (attrs.alpha != alpha) {
-                    attrs.alpha = alpha;
-                    window.setAttributes(attrs);
-                }
-            }
+            applyAlpha();
+            // Black is "no light" on a HUD: a black background blanks the car's own readouts under the
+            // picture, a clear one leaves them showing around it.
+            setBackgroundColor(prefs.hudCover() ? 0xFF000000 : 0);
             mapBox.setVisibility(showMap() ? VISIBLE : INVISIBLE);
             requestLayout();
             invalidate();

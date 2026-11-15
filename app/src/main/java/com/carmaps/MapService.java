@@ -29,14 +29,15 @@ import android.view.ContextThemeWrapper;
 import android.view.Display;
 import android.view.WindowManager;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Keeps the floating Google Maps window on screen. When the page shows directions to somewhere, it
- * offers turn-by-turn guidance to the same place: a route from OpenStreetMap data ({@link Router}),
- * followed by GPS, shown on the HUD, in the bar under the map, and spoken.
+ * Keeps the floating map on screen, follows the car by GPS, finds places and routes from
+ * OpenStreetMap data ({@link Router}), and gives turn-by-turn guidance on the map window, on the
+ * HUD and by voice.
  */
 public class MapService extends Service implements MapWindow.Host, LocationListener {
 
@@ -46,7 +47,6 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     static final String ACTION_STOP = "com.carmaps.action.STOP";
     static final String ACTION_REFRESH = "com.carmaps.action.REFRESH";
     static final String ACTION_RESET_POSITION = "com.carmaps.action.RESET_POSITION";
-    static final String ACTION_HOME = "com.carmaps.action.HOME";
     static final String ACTION_HUD_TEST = "com.carmaps.action.HUD_TEST";
 
     private static final String CHANNEL = "map";
@@ -55,8 +55,6 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private static final long MIN_REROUTE_GAP_MS = 8000;
     private static final int OFF_ROUTE_FIXES = 3;
     private static final double ARRIVE_M = 35;
-    /** How many times to look at the page again for a destination's coordinates before searching by name. */
-    private static final int PAGE_TRIES = 4;
 
     static volatile boolean running;
     /** For the settings screen. */
@@ -93,18 +91,13 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private long lastGpsAt;
     private double bearing;
 
-    /** What the page is showing directions to, and what guidance is heading for. */
-    private String offeredName = "";
-    private int offerTries;
-    private Router.Dest offered;
+    /** Where the user wants to go, the route there once it is known, and whether it is being followed. */
     private Router.Dest dest;
+    private Nav.Route route;
     private Nav nav;
     private boolean navigating;
     private int routeSeq;
     private boolean routePending;
-    /** The request the page has been asked to answer with Google's route, or 0. */
-    private int googleSeq;
-    private static final long GOOGLE_WAIT_MS = 12000;
     private long lastRouteRequest;
     private int offRouteCount;
     /** Which spoken prompts have been given for the coming turn: 0 none, 1 the early one, 2 the final one. */
@@ -155,10 +148,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             window.open(size[0], size[1]);
         }
         if (ACTION_RESET_POSITION.equals(action)) window.resetPosition();
-        if (ACTION_HOME.equals(action)) window.goHome();
         if (ACTION_HUD_TEST.equals(action)) hud.test();
         // Start and refresh both pick up whatever changed: permissions and settings.
         startLocation();
+        window.refresh();
         hud.refresh();
         if (prefs.voice() && speaker == null) speaker = new Speaker(this);
         if (!prefs.voice() && speaker != null) {
@@ -199,8 +192,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         return new int[]{m.widthPixels, m.heightPixels};
     }
 
-    @Override
-    public boolean hasLocationPermission() {
+    private boolean hasLocationPermission() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
@@ -256,6 +248,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         }
         listening = used.length() > 0;
         gpsStatus = listening ? "Waiting for a position (" + used + ")" : "This device offers no location source";
+        if (last != null) {
+            if (last.hasBearing()) bearing = last.getBearing();
+            window.setCar(last.getLatitude(), last.getLongitude(), bearing);
+        }
     }
 
     @Override
@@ -267,25 +263,37 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         else if (lastGpsAt != 0 && now - lastGpsAt < 10000) return;
         last = l;
         gpsStatus = String.format(Locale.US, "%s fix, accurate to %.0f m", l.getProvider(), l.getAccuracy());
-        if (l.hasBearing() && l.hasSpeed() && l.getSpeed() > 1.5f) bearing = l.getBearing();
+        boolean moving = l.hasSpeed() && l.getSpeed() > 1.5f;
+        if (l.hasBearing() && moving) bearing = l.getBearing();
         hud.setBearing(bearing);
-        if (!navigating || nav == null) return;
 
-        Nav.Progress p = nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f);
-        if (p.offRoute) offRouteCount++;
-        else offRouteCount = 0;
-        if (!p.offRoute && p.remainDist < ARRIVE_M) {
-            say("You have arrived");
-            endNav();
-            window.showMessage("You have arrived", dest == null ? "" : dest.shortName());
-            dest = null;
-            return;
+        double lat = l.getLatitude(), lng = l.getLongitude();
+        if (navigating && nav != null) {
+            Nav.Progress p = nav.update(lat, lng, l.hasAccuracy() ? l.getAccuracy() : 0f);
+            if (p.offRoute) {
+                offRouteCount++;
+            } else {
+                // On the route: show the car on the road, pointing along it.
+                offRouteCount = 0;
+                lat = p.snapLat;
+                lng = p.snapLng;
+                if (moving || !l.hasSpeed()) bearing = p.snapBearing;
+            }
+            if (!p.offRoute && p.remainDist < ARRIVE_M) {
+                window.setCar(lat, lng, bearing);
+                say("You have arrived");
+                String name = dest == null ? "" : dest.name;
+                endNav();
+                window.showMessage("You have arrived", name);
+                return;
+            }
+            showProgress(p);
+            speakFor(p, l.hasSpeed() ? l.getSpeed() : 0f);
+            if (!routePending && offRouteCount >= OFF_ROUTE_FIXES && now - lastRouteRequest > MIN_REROUTE_GAP_MS) {
+                requestRoute();
+            }
         }
-        showProgress(p);
-        speakFor(p, l.hasSpeed() ? l.getSpeed() : 0f);
-        if (!routePending && offRouteCount >= OFF_ROUTE_FIXES && now - lastRouteRequest > MIN_REROUTE_GAP_MS) {
-            requestRoute();
-        }
+        window.setCar(lat, lng, bearing);
     }
 
     @Override
@@ -301,81 +309,99 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     public void onProviderDisabled(String provider) {
     }
 
-    // ------------------------------------------------------------------ what the page is showing
+    // ------------------------------------------------------------------ search and destination
 
     @Override
-    public void onDestination(String name, double lat, double lng) {
-        if (navigating) return;   // already guiding: browsing the map doesn't change that
-        boolean known = !Double.isNaN(lat) && !Double.isNaN(lng);
-        if (!name.equals(offeredName)) {
-            offeredName = name;
-            offerTries = 0;
-            offered = null;
-        }
-        if (known) {
-            offered = new Router.Dest(name, lat, lng);
-            window.showOffer("Guide on HUD", offered.shortName());
-            return;
-        }
-        if (offered != null) return;
-        if (++offerTries < PAGE_TRIES) {
-            // The page hasn't fetched its directions yet: look again shortly.
-            window.retryDestination();
-            return;
-        }
-        if (offerTries > PAGE_TRIES) return;   // already searching by name, or gave up
-        // The page never gave coordinates: find the place by name instead.
-        final String wanted = name;
+    public void search(String text, int id) {
+        final Location near = last;
         io.execute(() -> {
-            double[] found = null;
             try {
-                found = Router.geocode(wanted);
+                List<Router.Dest> found = Router.search(text, near);
+                main.post(() -> window.showResults(id, found, null));
             } catch (Exception e) {
-                Log.w(TAG, "Couldn't look up " + wanted, e);
+                Log.w(TAG, "Search failed", e);
+                main.post(() -> window.showResults(id, null, friendly(e)));
             }
-            final double[] at = found;
-            main.post(() -> {
-                if (navigating || !wanted.equals(offeredName) || offered != null) return;
-                if (at == null) return;   // nothing to offer; the Google page still works on its own
-                offered = new Router.Dest(wanted, at[0], at[1]);
-                window.showOffer("Guide on HUD", offered.shortName() + " (approximate location)");
-            });
         });
     }
 
     @Override
-    public void onNoDestination() {
-        offeredName = "";
-        offered = null;
-        offerTries = 0;
-        if (!navigating && !routePending) window.hideBar();
+    public List<Router.Dest> recents() {
+        return prefs.recents();
+    }
+
+    @Override
+    public void pick(Router.Dest place) {
+        if (navigating) endNav();
+        dest = place;
+        route = null;
+        if (!"Dropped pin".equals(place.name)) prefs.addRecent(place);
+        window.showPlace(place);
+        window.showMessage("Finding a route…", place.name);
+        requestRoute();
+    }
+
+    @Override
+    public void clearDestination() {
+        if (navigating) return;
+        routeSeq++;
+        routePending = false;
+        dest = null;
+        route = null;
+        window.clearRoute();
+        window.hideBar();
     }
 
     @Override
     public void startNav() {
-        if (offered == null) return;
-        dest = offered;
-        nav = null;
-        window.showMessage("Finding a route…", dest.shortName());
-        requestRoute();
+        if (route == null || dest == null) {
+            // "Start" on a failed request: try for the route again.
+            if (dest != null && !routePending) {
+                window.showMessage("Finding a route…", dest.name);
+                requestRoute();
+            }
+            return;
+        }
+        nav = new Nav(route);
+        navigating = true;
+        offRouteCount = 0;
+        spokenStep = -1;
+        spokenStage = 0;
+        window.setGuiding(true);
+        hud.setRoute(route);
+        Location l = last;
+        if (l != null) {
+            showProgress(nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f));
+        }
+        say("Starting route to " + dest.name + ". "
+                + Geo.duration(route.durationSec).replace(" h ", " hours ").replace("min", "minutes") + ".");
     }
 
     @Override
     public void stopNav() {
         endNav();
-        dest = null;
-        if (offered != null) window.showOffer("Guide on HUD", offered.shortName());
-        else window.hideBar();
+        // Back to the overview of the same route, ready to start again.
+        if (route != null && dest != null) {
+            window.showRoute(route, true);
+            offer();
+        } else {
+            window.hideBar();
+        }
     }
 
     private void endNav() {
         routeSeq++;
-        googleSeq = 0;
         routePending = false;
         navigating = false;
         nav = null;
+        window.setGuiding(false);
         hud.setNav(null);
         hud.setRoute(null);
+    }
+
+    private void offer() {
+        window.showOffer(dest.name, Geo.duration(route.durationSec) + "  ·  " + Geo.distance(route.totalDist)
+                + "  ·  arrive " + Geo.clock(System.currentTimeMillis() + (long) (route.durationSec * 1000)));
     }
 
     // ------------------------------------------------------------------ routes
@@ -385,70 +411,19 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         final Location from = last;
         if (to == null) return;
         if (from == null) {
-            dest = null;
             window.showOffer("Waiting for GPS", hasLocationPermission()
-                    ? "Try again once the car has a position." : "Allow location in the Car Maps app first.");
+                    ? "Tap Start once the car has a position." : "Allow location in the Car Maps app first.");
             return;
         }
         final int seq = ++routeSeq;
+        final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
         routePending = true;
         lastRouteRequest = SystemClock.elapsedRealtime();
-        // First choice: the route Google itself draws, from where the car is now. When the car has
-        // left the route, Google's old route is no use, so that request must start from here.
-        googleSeq = seq;
-        window.requestGoogleRoute(from.getLatitude(), from.getLongitude(), navigating);
-        main.postDelayed(() -> {
-            if (googleSeq == seq) {
-                Log.w(TAG, "The page didn't answer with Google's route");
-                googleSeq = 0;
-                if (seq == routeSeq) requestOwnRoute(seq, from, to);
-            }
-        }, GOOGLE_WAIT_MS);
-    }
-
-    @Override
-    public void onGoogleRoute(String line, double seconds, double metres) {
-        final int seq = googleSeq;
-        final Router.Dest to = dest;
-        final Location from = last;
-        if (seq == 0 || seq != routeSeq || to == null || from == null) return;
-        googleSeq = 0;
-        if (line.isEmpty()) {
-            Log.w(TAG, "The page couldn't supply Google's route");
-            requestOwnRoute(seq, from, to);
-            return;
-        }
-        io.execute(() -> {
-            Nav.Route route = null;
-            try {
-                org.json.JSONObject trip = Router.trace(line, metres);
-                if (trip != null) {
-                    route = Nav.Route.parse(trip);
-                    route.google = true;
-                    route.scaleDuration(seconds);
-                } else {
-                    Log.w(TAG, "Google's route couldn't be matched to OpenStreetMap's roads");
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Matching Google's route failed", e);
-            }
-            final Nav.Route matched = route;
-            main.post(() -> {
-                if (seq != routeSeq) return;
-                if (matched != null) onRoute(matched);
-                else requestOwnRoute(seq, from, to);
-            });
-        });
-    }
-
-    /** The fallback: OpenStreetMap picks the roads itself. */
-    private void requestOwnRoute(int seq, Location from, Router.Dest to) {
-        final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
         io.execute(() -> {
             try {
-                Nav.Route route = Nav.Route.parse(Router.route(from, to, tolls, highways));
+                Nav.Route found = Nav.Route.parse(Router.route(from, to, tolls, highways));
                 main.post(() -> {
-                    if (seq == routeSeq) onRoute(route);
+                    if (seq == routeSeq) onRoute(found);
                 });
             } catch (Exception e) {
                 Log.w(TAG, "Route failed", e);
@@ -456,31 +431,30 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
                     if (seq != routeSeq) return;
                     routePending = false;
                     // While driving, keep following the route we have; only a first request reports the failure.
-                    if (!navigating) {
-                        dest = null;
-                        window.showOffer("Couldn't get a route", friendly(e));
-                    }
+                    if (!navigating) window.showOffer("Couldn't get a route", friendly(e) + " Tap Start to try again.");
                 });
             }
         });
     }
 
-    private void onRoute(Nav.Route route) {
+    private void onRoute(Nav.Route found) {
         routePending = false;
-        boolean first = !navigating;
-        nav = new Nav(route);
-        navigating = true;
+        route = found;
+        if (!navigating) {
+            window.showRoute(found, true);
+            offer();
+            return;
+        }
+        // A new route while driving: carry straight on with it.
+        nav = new Nav(found);
         offRouteCount = 0;
         spokenStep = -1;
         spokenStage = 0;
-        hud.setRoute(route);
+        window.showRoute(found, false);
+        hud.setRoute(found);
         Location l = last;
         if (l != null) {
             showProgress(nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f));
-        }
-        if (first) {
-            say("Starting route to " + dest.shortName() + ". "
-                    + Geo.duration(route.durationSec).replace(" h ", " hours ").replace("min", "minutes") + ".");
         }
     }
 
@@ -491,18 +465,17 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             return;
         }
         String title = Geo.distance(p.distToManeuver) + "  ·  " + p.text;
-        String sub = Geo.clock(p.eta) + " arrival  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist)
-                + (nav != null && nav.route().google ? "  ·  Google's route" : "  ·  own route");
+        String sub = Geo.clock(p.eta) + " arrival  ·  " + Geo.duration(p.remainSec) + "  ·  " + Geo.distance(p.remainDist);
         window.showTurn(Maneuvers.of(p.maneuver), title, sub);
     }
 
     private static String friendly(Exception e) {
         if (e instanceof java.net.UnknownHostException || e instanceof java.net.SocketTimeoutException
                 || e instanceof java.net.ConnectException) {
-            return "No internet connection";
+            return "No internet connection.";
         }
         String m = e.getMessage();
-        return m == null || m.isEmpty() ? "Something went wrong" : m;
+        return m == null || m.isEmpty() ? "Something went wrong." : m;
     }
 
     // ------------------------------------------------------------------ speech

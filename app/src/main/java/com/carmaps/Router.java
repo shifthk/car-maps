@@ -14,40 +14,46 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * Turn-by-turn routes from OpenStreetMap data, with no key or account: the Valhalla routing server
- * run by FOSSGIS for the OpenStreetMap project, and Nominatim to find a place by name when the Google
- * Maps page didn't give its coordinates. Both are free community services meant for light personal
- * use. Blocking; call off the main thread.
+ * Places and routes from OpenStreetMap data, with no key or account: Photon (run by Komoot) to find
+ * places as you type, and the Valhalla routing server run by FOSSGIS for turn-by-turn driving routes.
+ * Both are free community services meant for light personal use. Blocking; call off the main thread.
  */
 final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
-    private static final String TRACE = "https://valhalla1.openstreetmap.de/trace_route";
-    private static final String SEARCH = "https://nominatim.openstreetmap.org/search";
-    private static final String AGENT = "CarMaps/1.0 (Android; personal in-car navigation)";
+    private static final String SEARCH = "https://photon.komoot.io/api/";
+    private static final String AGENT = "CarMaps/2.0 (Android; +https://github.com/shifthk/car-maps)";
 
     private Router() {
     }
 
-    /** Where to go. */
+    /** A place: somewhere to go, or a search result. */
     static final class Dest {
         final String name;
+        /** Street, town and so on; may be empty. */
+        final String detail;
         final double lat, lng;
+        /** How far away it is, for search results; may be empty. */
+        String distance = "";
 
-        Dest(String name, double lat, double lng) {
+        Dest(String name, String detail, double lat, double lng) {
             this.name = name;
+            this.detail = detail;
             this.lat = lat;
             this.lng = lng;
         }
 
-        /** The part before the first comma: "Hong Kong City Hall, 5 Edinburgh Pl, ..." → "Hong Kong City Hall". */
-        String shortName() {
-            int comma = name.indexOf(',');
-            String s = (comma > 0 ? name.substring(0, comma) : name).trim();
-            return s.isEmpty() ? "your destination" : s;
+        JSONObject json() throws JSONException {
+            return new JSONObject().put("n", name).put("d", detail).put("lat", lat).put("lng", lng);
+        }
+
+        static Dest from(JSONObject o) {
+            return new Dest(o.optString("n"), o.optString("d"), o.optDouble("lat"), o.optDouble("lng"));
         }
     }
 
@@ -75,57 +81,50 @@ final class Router {
         return trip;
     }
 
-    /**
-     * Turn-by-turn directions along a line someone else drew (Google's route): the line is matched
-     * onto OpenStreetMap's roads and described as a route.
-     *
-     * @param line    encoded polyline, six decimals
-     * @param metres  how long the line is supposed to be
-     * @return Valhalla's "trip" along the line, or null if the roads it found don't add up to the line
-     */
-    static JSONObject trace(String line, double metres) throws IOException, JSONException {
-        JSONObject body = new JSONObject()
-                .put("encoded_polyline", line)
-                .put("costing", "auto")
-                .put("shape_match", "map_snap")
-                .put("units", "kilometers")
-                .put("language", language());
-        JSONObject res = new JSONObject(http("POST", TRACE, body.toString()));
-        // Where the line can't be followed in one go (it starts in a car park, say), the pieces come
-        // back separately: the first as "trip", the rest as "alternates". Take the longest.
-        JSONObject best = res.optJSONObject("trip");
-        JSONArray others = res.optJSONArray("alternates");
-        if (others != null) {
-            for (int i = 0; i < others.length(); i++) {
-                JSONObject t = others.getJSONObject(i).optJSONObject("trip");
-                if (t != null && (best == null || length(t) > length(best))) best = t;
-            }
+    /** @return places matching what was typed, nearest-first where the names match equally well */
+    static List<Dest> search(String text, Location near) throws IOException, JSONException {
+        StringBuilder url = new StringBuilder(SEARCH).append("?limit=8&lang=en&q=")
+                .append(URLEncoder.encode(text, "UTF-8"));
+        if (near != null) {
+            url.append(String.format(Locale.US, "&lat=%.5f&lon=%.5f", near.getLatitude(), near.getLongitude()));
         }
-        if (best == null) return null;
-        double found = length(best) * 1000;
-        // A piece much shorter than the line means part of the route is missing; much longer means a detour.
-        if (metres > 0 && (found < metres * 0.9 || found > metres * 1.1)) return null;
-        return best;
-    }
+        JSONArray features = new JSONObject(http("GET", url.toString(), null)).optJSONArray("features");
+        List<Dest> out = new ArrayList<>();
+        if (features == null) return out;
+        for (int i = 0; i < features.length(); i++) {
+            JSONObject f = features.getJSONObject(i);
+            JSONObject p = f.optJSONObject("properties");
+            JSONObject g = f.optJSONObject("geometry");
+            JSONArray at = g == null ? null : g.optJSONArray("coordinates");
+            if (p == null || at == null || at.length() < 2) continue;
 
-    private static double length(JSONObject trip) {
-        JSONObject summary = trip.optJSONObject("summary");
-        return summary == null ? 0 : summary.optDouble("length", 0);
-    }
-
-    /** @return {lat, lng} of the best match for a place name, or null */
-    static double[] geocode(String name) throws IOException, JSONException {
-        String url = SEARCH + "?format=jsonv2&limit=1&q=" + URLEncoder.encode(name, "UTF-8");
-        JSONArray list = new JSONArray(http("GET", url, null));
-        if (list.length() == 0) return null;
-        JSONObject first = list.getJSONObject(0);
-        return new double[]{first.getDouble("lat"), first.getDouble("lon")};
+            String street = p.optString("street");
+            String number = p.optString("housenumber");
+            String address = street.isEmpty() ? "" : number.isEmpty() ? street : number + " " + street;
+            String name = p.optString("name");
+            List<String> rest = new ArrayList<>();
+            if (name.isEmpty()) name = address;
+            else if (!address.isEmpty()) rest.add(address);
+            for (String key : new String[]{"district", "city", "state", "country"}) {
+                String v = p.optString(key);
+                if (!v.isEmpty() && !v.equals(name) && !rest.contains(v)) rest.add(v);
+            }
+            if (name.isEmpty()) {
+                if (rest.isEmpty()) continue;
+                name = rest.remove(0);
+            }
+            Dest d = new Dest(name, String.join(", ", rest), at.getDouble(1), at.getDouble(0));
+            if (near != null) {
+                d.distance = Geo.distance(Geo.dist(near.getLatitude(), near.getLongitude(), d.lat, d.lng));
+            }
+            out.add(d);
+        }
+        return out;
     }
 
     /** Valhalla writes instructions in a handful of languages; anything else gets English. */
     private static String language() {
-        String tag = Locale.getDefault().toLanguageTag();
-        return tag.startsWith("en") ? tag.equals("en-GB") ? "en-GB" : "en-US" : "en-US";
+        return "en-GB".equals(Locale.getDefault().toLanguageTag()) ? "en-GB" : "en-US";
     }
 
     private static String http(String method, String url, String body) throws IOException {
@@ -146,8 +145,8 @@ final class Router {
             int code = c.getResponseCode();
             String text = read(code >= 400 ? c.getErrorStream() : c.getInputStream());
             if (code >= 400) {
-                String message = code == 429 ? "The routing service is busy. Try again in a moment."
-                        : "The routing service returned error " + code;
+                String message = code == 429 ? "The service is busy. Try again in a moment."
+                        : "The service returned error " + code;
                 try {
                     String error = new JSONObject(text).optString("error");
                     if (!error.isEmpty()) message = error;

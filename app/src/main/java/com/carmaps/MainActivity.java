@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     }
 
     private Prefs prefs;
+    private Updater updater;
     private LinearLayout root;
     private TextView status;
     private Button startStop, overlayButton, locationButton, backgroundButton;
@@ -114,16 +115,14 @@ public class MainActivity extends Activity {
         root.addView(button("Put the map back in its starting place", v ->
                 MapService.send(this, MapService.ACTION_RESET_POSITION)));
 
-        root.addView(button("Go back to the Google Maps start page", v ->
-                MapService.send(this, MapService.ACTION_HOME)));
-        root.addView(note("The floating window is the Google Maps website. Search, traffic and Google's own route and "
-                + "arrival time all work there, signed in or not. When it shows directions to a place, a bar under the "
-                + "map offers \"Guide on HUD\": turn-by-turn guidance to the same place, worked out from OpenStreetMap "
-                + "data, so its route can differ from the one Google draws and its arrival time ignores traffic."));
+        root.addView(note("The floating window is an OpenStreetMap map. Search for a place, or hold a finger on the "
+                + "map to drop a pin, and it works out a driving route. Tap Start for turn-by-turn guidance on the "
+                + "map, on the HUD and by voice. OpenStreetMap has no live traffic, so arrival times assume clear roads."));
 
         // ---- map
         heading("Guidance");
         toggle("Start with the car", prefs.startOnBoot(), prefs::setStartOnBoot);
+        toggle("Dark map", prefs.darkMap(), prefs::setDarkMap);
         toggle("Spoken directions", prefs.voice(), prefs::setVoice);
         toggle("Avoid tolls", prefs.avoidTolls(), prefs::setAvoidTolls);
         toggle("Avoid highways", prefs.avoidHighways(), prefs::setAvoidHighways);
@@ -132,6 +131,7 @@ public class MainActivity extends Activity {
         heading("Head-up display");
         toggle("Show directions on the HUD", prefs.hud(), prefs::setHud);
         toggle("Mini map of the route ahead", prefs.hudMap(), prefs::setHudMap);
+        toggle("Blank the car's own HUD readouts while directions show", prefs.hudCover(), prefs::setHudCover);
 
         final List<Integer> displayIds = new ArrayList<>();
         List<String> displayNames = new ArrayList<>();
@@ -158,8 +158,23 @@ public class MainActivity extends Activity {
             }
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
-        root.addView(note("Move the sliders while the sample is showing to place it where the car's own HUD "
-                + "readouts aren't. Black areas are see-through on a HUD."));
+        root.addView(note("The directions are drawn above everything else on the HUD. Move the sliders while the "
+                + "sample is showing to place it. Black areas are see-through on a HUD, so the car's own readouts "
+                + "still show around the directions unless you blank them with the switch above (that hides the "
+                + "car's speed readout on the HUD too)."));
+
+        // ---- updates
+        heading("App");
+        root.addView(note("Version " + Updater.currentVersion(this)));
+        updater = new Updater(this, prefs);
+        root.addView(button("Check for updates", v -> updater.checkNow()));
+        updater.autoCheck();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (updater != null) updater.shutdown();
+        super.onDestroy();
     }
 
     @Override

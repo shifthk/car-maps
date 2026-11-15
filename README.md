@@ -1,32 +1,33 @@
 # Car Maps
 
-Google Maps in a floating window for an Android car screen (built for the Zeekr 7X), with turn-by-turn directions and a mini map on the head-up display.
+An OpenStreetMap map in a floating window for an Android car screen (built for the Zeekr 7X), with turn-by-turn directions and a mini map on the head-up display. Everything comes from OpenStreetMap: no Google, no API key, no account.
 
-- **Floating window**: the Google Maps website, drawn over every other app. Search, traffic, Google's route and its arrival time all work there, signed in to Google or not.
+- **Floating window**: a map drawn over every other app, with a search box above it.
   - Tap the round button on the window's top right corner to hide or show the map.
   - Drag the round button to move the window; drag the grip in the bottom left corner to resize it.
-- **Guide on HUD**: when the page shows directions to a place, a bar under the map offers guidance to the same place. While guiding, the HUD shows the next turn (arrow, distance, instruction), the arrival time, time and distance left, and a mini map of the route ahead with the car pointing up. The bar under the map shows the same turn, and directions are spoken if the car has a text-to-speech engine.
+  - Drag the map to move it, pinch or double-tap to zoom. The ◎ button goes back to following the car.
+- **Finding somewhere**: type in the search box (results appear as you type, nearest first), pick one of your recent places, or hold a finger on the map to drop a pin.
+- **Route**: the app draws the driving route and shows its time, distance and arrival time. Tap **Start**.
+- **Guidance**: the next turn shows in the bar under the map, on the HUD (arrow, distance, instruction, arrival time, and a mini map of the route ahead with the car pointing up), and is spoken if the car has a text-to-speech engine. Leave the route and it finds a new one.
 
-No API key or billing is needed.
+OpenStreetMap has no live traffic, so there is no traffic layer and arrival times assume clear roads.
 
 ## How it works
 
 | Part | What it does |
 | --- | --- |
-| `MapWindow` | The overlay window and its `WebView` on google.com/maps. Reads the destination from the page while it shows directions. |
-| `Router` | Matches Google's route line onto OpenStreetMap roads for turn-by-turn instructions (the FOSSGIS Valhalla server); falls back to its own routes, and to Nominatim to find a place by name. |
+| `TileMap` | The map itself: draws OpenStreetMap's standard tiles natively, with the route, destination and car on top. Tiles are kept on disk for two weeks. |
+| `Router` | Place search (Photon, run by Komoot) and driving routes (the Valhalla server run by FOSSGIS). |
 | `Nav` | Follows the route by GPS: snaps the position to the route line, finds the next turn, notices when the car leaves the route. |
 | `Hud` | Finds the HUD display and draws on it. |
-| `MapService` | Foreground service tying these together; asks for a new route when the car leaves the old one. |
+| `MapWindow` | The floating window: search box, results, map, and the bar under it. |
+| `MapService` | Foreground service tying these together. |
 | `MainActivity` | Permissions and settings, including where the panel sits on the HUD. |
+| `Updater` | Checks this repository's releases and installs a newer APK. |
 
-**The HUD follows Google's route.** The Google Maps website gives an app no route data of its own, so the app asks the page for Google's route again, from where the car is, with one extra option that makes Google include the route's full line. That line is matched onto OpenStreetMap's roads (Valhalla's `trace_route`), which turns it into turn-by-turn instructions, and the arrival time is set to Google's time in traffic. The bar under the map says "Google's route" when this worked. If it doesn't (Google changes its page, or the line can't be matched), the app falls back to letting OpenStreetMap choose the roads itself, and the bar says "own route". Guidance always follows Google's first (default) route, even if another one is selected on the page. When the car leaves the route, Google is asked again from the car's new position.
+**The HUD.** The 7X exposes its HUD to Android as a second display, 1440 x 480 (display 3 on the cars checked). The app puts an overlay window on it (the "display over other apps" kind), which Android stacks above everything else shown there. A HUD is a projection, so black is see-through: only the arrow, text and route line light up, and the car's own readouts still show around them. The setting **Blank the car's own HUD readouts** paints the whole HUD black behind the directions instead, which hides the car's speed readout too. If the car refuses an overlay window on that display, the app falls back to an ordinary second-screen window, and the status line on the settings screen says so. How to find and draw on the HUD was learned from [zeekr-shortcut-car](https://github.com/dts88/zeekr-shortcut-car) (dts88) and CAMCORDER (FerixzTanz); no code was copied from either (both are GPL-3.0).
 
-**Reading the destination.** The site's address only carries the place's name and ID. The coordinates come from the answer to the page's own directions request, which the app fetches again from inside the page. If Google changes that page, the app falls back to looking the name up in OpenStreetMap, which is less exact (the bar then says "approximate location").
-
-**The HUD.** The 7X exposes its HUD to Android as a second display, 1440 x 480 (display 3 on the cars checked). The app opens a transparent `Presentation` on it. A HUD is a projection, so black is see-through: only the arrow, text and route line light up. This approach was learned from [zeekr-shortcut-car](https://github.com/dts88/zeekr-shortcut-car) (dts88) and CAMCORDER (FerixzTanz); no code was copied from either (both are GPL-3.0).
-
-**Signing in to Google** is optional and only adds saved places and history. Google turns away sign-ins from apps' built-in web views, so the window identifies itself as ordinary Chrome. Google may still refuse.
+**The services are free community ones**, meant for light personal use: [OpenStreetMap's tile servers](https://operations.osmfoundation.org/policies/tiles/), [Photon](https://photon.komoot.io) and the [FOSSGIS Valhalla server](https://valhalla.openstreetmap.de). The app identifies itself to each, fetches only the tiles on screen, and keeps them on disk. Map data © OpenStreetMap contributors.
 
 ## Build
 
@@ -42,11 +43,13 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 1. Install the APK and open **Car Maps**.
 2. Tap **Allow display over other apps**, then **Allow location**, then **Allow location all the time** (needed for the map to come back by itself when the car starts).
-3. Tap **Start the floating map**. In the window, choose **Keep using web** when Google offers its app.
-4. Under **Head-up display**, tap **Show a sample on the HUD** and use the sliders to place it clear of the car's own HUD readouts. The status lines at the top list every display the car reports and which one looks like the HUD; pick one by hand under **HUD display** if the automatic choice is wrong.
+3. Tap **Start the floating map**.
+4. Under **Head-up display**, tap **Show a sample on the HUD** and use the sliders to place it. The status lines at the top list every display the car reports and which one looks like the HUD; pick one by hand under **HUD display** if the automatic choice is wrong.
+
+**Updates**: the settings screen checks for a newer release when it opens, and **Check for updates** does it on demand. The first time, Android asks you to allow Car Maps to install apps.
 
 ## Tested and not tested
 
-Tested on a Lenovo tablet (Android 15) with a simulated 1440 x 480 second display: the floating window, typing in the search box, directions, reading the destination, routing, and the HUD picture.
+Version 2.0 (the OpenStreetMap map, search, the on-top HUD window and the updater) compiles, and the services it calls were checked to answer, but it has not been run on any device yet. The earlier Google-based version was run on a tablet with a simulated HUD display; the route following, HUD picture and floating window mechanics carried over from it.
 
-Not tested: anything on the car itself (whether it gives the app a GPS position, the real HUD, starting with the car), driving along a route (turn progress, rerouting, arrival, speech), and signing in to Google.
+Never tested: anything on the car itself (whether it gives the app a GPS position, the real HUD, starting with the car) or while driving (turn progress, rerouting, arrival, speech).

@@ -8,9 +8,13 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.InputType;
 import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -20,116 +24,44 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
-import android.webkit.CookieManager;
-import android.webkit.GeolocationPermissions;
-import android.webkit.JavascriptInterface;
-import android.webkit.RenderProcessGoneDetail;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.List;
+
 /**
- * The floating map: one overlay window showing the Google Maps website, with a round button on its
- * top right corner. Tapping the button hides the map (leaving just the button, in the same place) or
- * shows it again; dragging the button moves the window; dragging the grip in the bottom left corner
- * resizes it.
- *
- * <p>When the page shows directions to somewhere, a bar under the map offers to guide there on the
- * HUD, and then shows the next turn.</p>
+ * The floating map: one overlay window with a search box, an OpenStreetMap map and, under the map, a
+ * bar for the route and the next turn. A round button sits on the window's top right corner: tapping
+ * it hides the map (leaving just the button, in the same place) or shows it again; dragging it moves
+ * the window; dragging the grip in the bottom left corner resizes it.
  */
-final class MapWindow {
+final class MapWindow implements TileMap.Listener {
 
     interface Host {
-        /** The page is showing directions to this place. Coordinates are NaN when the page didn't give them. */
-        void onDestination(String name, double lat, double lng);
+        /** Look for places; answer with {@link #showResults}. */
+        void search(String text, int id);
 
-        /** The page is no longer showing directions. */
-        void onNoDestination();
+        /** Places picked before, newest first. */
+        List<Router.Dest> recents();
 
-        /**
-         * Google's own route, asked for with {@link #requestGoogleRoute}: its line as an encoded
-         * polyline (six decimals), its time in traffic and its length. The line is empty if the page
-         * couldn't supply it.
-         */
-        void onGoogleRoute(String line, double seconds, double metres);
+        /** The user chose somewhere to go. */
+        void pick(Router.Dest place);
+
+        /** The user dismissed the destination (only when not being guided). */
+        void clearDestination();
 
         void startNav();
 
         void stopNav();
-
-        boolean hasLocationPermission();
     }
 
     private static final String TAG = "MapWindow";
-    private static final String HOME = "https://www.google.com/maps";
-
-    /**
-     * Runs in the Google Maps page. Tells the app when a text box is tapped (so the window can take
-     * keyboard focus), and remembers the address of the page's own directions request.
-     */
-    private static final String SETUP_JS = "(function(){if(window.__carmaps)return;window.__carmaps=1;"
-            + "try{performance.setResourceTimingBufferSize(4000)}catch(e){}"
-            + "try{new PerformanceObserver(function(l){l.getEntries().forEach(function(e){"
-            + "if(e.name.indexOf('/maps/preview/directions')>=0)window.__carmapsDir=e.name})})"
-            + ".observe({type:'resource',buffered:true})}catch(e){}"
-            + "function ed(t){return !!t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)}"
-            + "document.addEventListener('click',function(e){Car.focus(ed(e.target))},true);"
-            + "document.addEventListener('focusin',function(e){if(ed(e.target))Car.focus(true)},true);"
-            + "})()";
-
-    /**
-     * Runs in the Google Maps page while it shows directions. The destination's name is the last
-     * part of the address. Its coordinates are either that same part (a dropped pin), or are read
-     * from the answer to the page's own directions request, next to the place's ID.
-     */
-    private static final String DEST_JS = "(function(){var u=location.href;"
-            + "var m=u.match(/\\/maps\\/dir\\/([^@?]*)/);if(!m||m[1].indexOf('/')<0){Car.noDest();return}"
-            + "var segs=m[1].split('/').filter(function(s){return s&&s.indexOf('data=')!==0});"
-            + "if(!segs.length){Car.noDest();return}"
-            + "var name=segs[segs.length-1];try{name=decodeURIComponent(name.replace(/\\+/g,' '))}catch(e){}"
-            + "var c=name.match(/^\\s*(-?\\d+(?:\\.\\d+)?),\\s*(-?\\d+(?:\\.\\d+)?)\\s*$/);"
-            + "if(c){Car.dest(name,+c[1],+c[2]);return}"
-            + "var ids=u.match(/0x[0-9a-f]+:0x[0-9a-f]+/g);var id=ids?ids[ids.length-1]:null;"
-            + "var d=window.__carmapsDir;if(!id||!d){Car.dest(name,NaN,NaN);return}"
-            + "fetch(d,{credentials:'include'}).then(function(r){return r.text()}).then(function(t){"
-            + "var k=t.match(new RegExp('\"'+id+'\",\\\\[null,null,(-?[0-9.]+),(-?[0-9.]+)\\\\]'));"
-            + "if(k)Car.dest(name,+k[1],+k[2]);else Car.dest(name,NaN,NaN)})"
-            + ".catch(function(){Car.dest(name,NaN,NaN)})})()";
-
-
-    /**
-     * Runs in the Google Maps page: asks Google for its route again, this time with the route's
-     * full line, starting from where the car is now. The page's own request is reused with two
-     * changes: the starting point, and one extra flag ("14b1") that makes the answer include the line
-     * of every route. The first driving route (the one Google shows selected) is handed back as an
-     * encoded polyline, with Google's distance and its time in current traffic.
-     */
-    private static final String ROUTE_JS = "(function(lat,lng,must){"
-            + "function fail(){Car.route('',0,0)}"
-            + "var d=window.__carmapsDir;if(!d){fail();return}"
-            + "d=d.replace(/%21/g,'!');"
-            + "var o=/(pb=!1m\\d+!3m2)!3d-?[0-9.]+!4d-?[0-9.]+/;"
-            + "if(o.test(d))d=d.replace(o,'$1!3d'+lat+'!4d'+lng);else if(must){fail();return}"
-            + "var m=d.match(/!6m(\\d+)/);if(!m){fail();return}"
-            + "d=d.replace('!6m'+m[1],'!6m'+(+m[1]+1)+'!14b1');"
-            + "fetch(d,{credentials:'include'}).then(function(r){return r.text()}).then(function(t){"
-            + "var j=JSON.parse(t.slice(t.indexOf('\\n')+1)),rs=j[0][1],g=j[0][7],k=-1;"
-            + "for(var i=0;i<rs.length;i++){if(rs[i][0][0]===0&&g[i]&&g[i][0]&&g[i][1]){k=i;break}}"
-            + "if(k<0){fail();return}"
-            + "var a=g[k][0],b=g[k][1],n=Math.min(a.length,b.length),skip=Math.ceil(n/6000),la=0,lo=0,pl=0,pg=0,out='';"
-            + "function e(v){v=v<0?~(v<<1):(v<<1);var s='';"
-            + "while(v>=32){s+=String.fromCharCode((32|(v&31))+63);v>>>=5}return s+String.fromCharCode(v+63)}"
-            + "for(var q=0;q<n;q++){la+=a[q];lo+=b[q];if(q%skip&&q!==n-1)continue;"
-            + "var x=Math.round(la/10),y=Math.round(lo/10);out+=e(x-pl)+e(y-pg);pl=x;pg=y}"
-            + "var s=rs[k][0];"
-            + "Car.route(out,(s[10]&&s[10][0]&&s[10][0][0])||(s[3]&&s[3][0])||0,(s[2]&&s[2][0])||0)"
-            + "}).catch(fail)})";
+    private static final long TYPING_PAUSE_MS = 600;
 
     private final Context ui;
     private final WindowManager wm;
@@ -139,10 +71,16 @@ final class MapWindow {
     private final WindowManager.LayoutParams lp;
     private final Frame frame;
     private final LinearLayout content;
-    private final FrameLayout webHolder;
     private final IconButton icon;
     private final View grip;
     private final int iconSize, inset, minW, minH;
+
+    private final EditText search;
+    private final TextView clear;
+    private final TileMap map;
+    private final ScrollView resultsScroll;
+    private final LinearLayout results;
+    private final TextView recenter;
 
     // The bar under the map.
     private final LinearLayout bar;
@@ -150,23 +88,18 @@ final class MapWindow {
     private final TextView barTitle, barSub, barButton;
     private Runnable barAction;
 
-    private WebView web;
     private boolean collapsed;
     private boolean focused;
     private boolean added;
     private boolean destroyed;
+    private boolean guiding;
+    private boolean settingText;
+    private int searchId;
     private int screenW, screenH;
     /** The map's top left corner and size when shown. */
     private int x, y, w, h;
-    private String lastUrl = "";
 
-    private final Runnable watchUrl = new Runnable() {
-        @Override
-        public void run() {
-            checkUrl();
-            main.postDelayed(this, 1500);
-        }
-    };
+    private final Runnable searchNow = this::runSearch;
 
     MapWindow(Context ui, WindowManager wm, Prefs prefs, Host host) {
         this.ui = ui;
@@ -202,13 +135,89 @@ final class MapWindow {
         clp.setMargins(dp(4), inset, inset, dp(4));
         frame.addView(content, clp);
 
-        webHolder = new FrameLayout(ui);
-        content.addView(webHolder, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        // ---- search row
+        LinearLayout top = new LinearLayout(ui);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setBackgroundColor(0xFF262B31);
+        top.setPadding(dp(16), 0, dp(40), 0);   // clear of the round button on the right
+        search = new EditText(ui);
+        search.setHint("Search for a place");
+        search.setHintTextColor(0xFF9AA4AE);
+        search.setTextColor(0xFFF2F4F6);
+        search.setTextSize(19);
+        search.setSingleLine(true);
+        search.setBackground(null);
+        search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        search.setImeOptions(EditorInfo.IME_ACTION_SEARCH | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        // No copy-and-paste pop-ups: they belong to an app screen, which a floating window isn't.
+        search.setLongClickable(false);
+        search.setCustomSelectionActionModeCallback(new android.view.ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(android.view.ActionMode mode, android.view.Menu menu) {
+                return false;
+            }
 
+            @Override
+            public boolean onPrepareActionMode(android.view.ActionMode mode, android.view.Menu menu) {
+                return false;
+            }
+
+            @Override
+            public boolean onActionItemClicked(android.view.ActionMode mode, android.view.MenuItem item) {
+                return false;
+            }
+
+            @Override
+            public void onDestroyActionMode(android.view.ActionMode mode) {
+            }
+        });
+        top.addView(search, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        clear = label(26, false);
+        clear.setText("×");
+        clear.setGravity(Gravity.CENTER);
+        clear.setTextColor(0xFFB6C0CA);
+        clear.setVisibility(View.GONE);
+        top.addView(clear, new LinearLayout.LayoutParams(dp(52), dp(56)));
+        content.addView(top, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // ---- map, with the results list and the buttons over it
+        FrameLayout middle = new FrameLayout(ui);
+        map = new TileMap(ui);
+        map.setListener(this);
+        map.setDark(prefs.darkMap());
+        middle.addView(map, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        LinearLayout side = new LinearLayout(ui);
+        side.setOrientation(LinearLayout.VERTICAL);
+        recenter = roundButton("◎", v -> {
+            map.setFollow(true);
+            updateRecenter();
+        });
+        side.addView(recenter);
+        side.addView(roundButton("+", v -> map.zoomBy(1)));
+        side.addView(roundButton("−", v -> map.zoomBy(-1)));
+        FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.BOTTOM);
+        slp.setMargins(0, 0, dp(10), dp(26));
+        middle.addView(side, slp);
+
+        resultsScroll = new ScrollView(ui);
+        resultsScroll.setBackgroundColor(0xF2262B31);
+        resultsScroll.setVisibility(View.GONE);
+        results = new LinearLayout(ui);
+        results.setOrientation(LinearLayout.VERTICAL);
+        resultsScroll.addView(results);
+        middle.addView(resultsScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+        content.addView(middle, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // ---- bar
         bar = new LinearLayout(ui);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setBackgroundColor(0xFF0C5A3C);
         bar.setPadding(dp(52), dp(8), dp(12), dp(8));   // clear of the resize grip on the left
         barIcon = new TurnView(ui);
         bar.addView(barIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -224,12 +233,10 @@ final class MapWindow {
         barButton = label(17, true);
         barButton.setGravity(Gravity.CENTER);
         barButton.setPadding(dp(20), 0, dp(20), 0);
-        barButton.setMinHeight(dp(48));
         barButton.setOnClickListener(v -> {
             if (barAction != null) barAction.run();
         });
-        bar.addView(barButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        bar.addView(barButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
         bar.setVisibility(View.GONE);
         content.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -243,6 +250,9 @@ final class MapWindow {
         icon.setElevation(dp(8));
         frame.addView(icon, new FrameLayout.LayoutParams(iconSize, iconSize, Gravity.TOP | Gravity.END));
         icon.setOnTouchListener(new MoveTouch());
+
+        wireSearch();
+        updateRecenter();
     }
 
     private TextView label(int sp, boolean bold) {
@@ -253,6 +263,22 @@ final class MapWindow {
         t.setEllipsize(TextUtils.TruncateAt.END);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
         return t;
+    }
+
+    private TextView roundButton(String text, View.OnClickListener l) {
+        TextView b = label(24, false);
+        b.setText(text);
+        b.setGravity(Gravity.CENTER);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(0xF2262B31);
+        b.setBackground(bg);
+        b.setElevation(dp(3));
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(52), dp(52));
+        p.topMargin = dp(10);
+        b.setLayoutParams(p);
+        return b;
     }
 
     private static int baseFlags() {
@@ -272,10 +298,7 @@ final class MapWindow {
             added = true;
         } catch (RuntimeException e) {
             Log.e(TAG, "Couldn't show the map window", e);
-            return;
         }
-        if (!collapsed) ensureWeb();
-        main.postDelayed(watchUrl, 1500);
     }
 
     void onScreenChanged(int screenW, int screenH) {
@@ -293,20 +316,15 @@ final class MapWindow {
         update();
     }
 
-    /** Back to the Google Maps start page (also signs of trouble: a blank or stuck page). */
-    void goHome() {
-        if (web != null) web.loadUrl(HOME);
+    /** Settings changed. */
+    void refresh() {
+        map.setDark(prefs.darkMap());
     }
 
     void destroy() {
         destroyed = true;
         main.removeCallbacksAndMessages(null);
-        CookieManager.getInstance().flush();
-        if (web != null) {
-            webHolder.removeView(web);
-            web.destroy();
-            web = null;
-        }
+        map.release();
         if (added) {
             try {
                 wm.removeView(frame);
@@ -317,9 +335,212 @@ final class MapWindow {
         }
     }
 
+    // ------------------------------------------------------------------ the map
+
+    void setCar(double lat, double lng, double bearing) {
+        map.setCar(lat, lng, (float) bearing);
+    }
+
+    /** A place was picked: mark it while its route is being worked out. */
+    void showPlace(Router.Dest d) {
+        setSearchText(d.name);
+        hideResults();
+        map.clearRoute();
+        map.setPin(d.lat, d.lng);
+        map.centerOn(d.lat, d.lng, 14);
+        updateRecenter();
+    }
+
+    /** Draws a route. {@code overview}: step back to show all of it (before setting off). */
+    void showRoute(Nav.Route r, boolean overview) {
+        map.setRoute(r.lat, r.lng);
+        int last = r.lat.length - 1;
+        map.setPin(r.lat[last], r.lng[last]);
+        if (overview) map.fitRoute();
+        updateRecenter();
+    }
+
+    void clearRoute() {
+        map.clearRoute();
+        map.clearPin();
+    }
+
+    /** Guidance started or ended: while guiding, the map stays on the car, zoomed in. */
+    void setGuiding(boolean on) {
+        guiding = on;
+        icon.setActive(on);
+        if (on) {
+            map.setFollow(true);
+            map.setZoom(17);
+            hideResults();
+            setFocused(false);
+        }
+        updateRecenter();
+    }
+
+    @Override
+    public void onUserMoved() {
+        updateRecenter();
+    }
+
+    @Override
+    public void onLongPress(double lat, double lng) {
+        if (guiding) return;
+        frame.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+        host.pick(new Router.Dest("Dropped pin", String.format(java.util.Locale.US, "%.5f, %.5f", lat, lng), lat, lng));
+    }
+
+    @Override
+    public void onTap() {
+        hideResults();
+        setFocused(false);
+    }
+
+    /** The recentre button is lit while the map is following the car. */
+    private void updateRecenter() {
+        recenter.setTextColor(map.isFollowing() ? 0xFF4C9BFF : 0xFFFFFFFF);
+    }
+
+    // ------------------------------------------------------------------ search
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void wireSearch() {
+        search.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == MotionEvent.ACTION_UP) {
+                setFocused(true);
+                if (search.getText().length() == 0) showRecents();
+            }
+            return false;
+        });
+        search.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                clear.setVisibility(s.length() > 0 ? View.VISIBLE : View.GONE);
+                if (settingText) return;
+                main.removeCallbacks(searchNow);
+                searchId++;   // whatever is still on its way is for older text
+                if (s.toString().trim().length() < 3) {
+                    if (s.length() == 0) showRecents();
+                    return;
+                }
+                main.postDelayed(searchNow, TYPING_PAUSE_MS);
+            }
+        });
+        search.setOnEditorActionListener((v, action, event) -> {
+            main.removeCallbacks(searchNow);
+            runSearch();
+            setFocused(false);
+            return true;
+        });
+        clear.setOnClickListener(v -> {
+            setSearchText("");
+            hideResults();
+            if (!guiding) host.clearDestination();
+        });
+    }
+
+    private void runSearch() {
+        String text = search.getText().toString().trim();
+        if (text.length() < 2) return;
+        host.search(text, ++searchId);
+    }
+
+    private void setSearchText(String text) {
+        settingText = true;
+        search.setText(text);
+        search.setSelection(search.getText().length());
+        settingText = false;
+    }
+
+    /** The answer to {@link Host#search}; ignored if the text has changed since it was asked. */
+    void showResults(int id, List<Router.Dest> places, String error) {
+        if (id != searchId || destroyed) return;
+        if (error != null) {
+            listRows(null, null, error);
+        } else if (places.isEmpty()) {
+            listRows(null, null, "Nothing found");
+        } else {
+            listRows(null, places, null);
+        }
+    }
+
+    private void showRecents() {
+        List<Router.Dest> recent = host.recents();
+        if (recent.isEmpty()) hideResults();
+        else listRows("RECENT", recent, null);
+    }
+
+    private void hideResults() {
+        resultsScroll.setVisibility(View.GONE);
+    }
+
+    private void listRows(String heading, List<Router.Dest> places, String message) {
+        results.removeAllViews();
+        if (heading != null) {
+            TextView t = label(12, true);
+            t.setText(heading);
+            t.setTextColor(0xFF9AA4AE);
+            t.setPadding(dp(18), dp(10), dp(18), dp(2));
+            results.addView(t);
+        }
+        if (message != null) {
+            TextView t = label(16, false);
+            t.setText(message);
+            t.setTextColor(0xFFB6C0CA);
+            t.setSingleLine(false);
+            t.setPadding(dp(18), dp(16), dp(18), dp(16));
+            results.addView(t);
+        }
+        if (places != null) {
+            for (Router.Dest d : places) results.addView(row(d));
+        }
+        resultsScroll.scrollTo(0, 0);
+        resultsScroll.setVisibility(View.VISIBLE);
+    }
+
+    private View row(Router.Dest d) {
+        LinearLayout row = new LinearLayout(ui);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(18), dp(10), dp(18), dp(10));
+        row.setMinimumHeight(dp(60));
+        LinearLayout texts = new LinearLayout(ui);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView name = label(18, false);
+        name.setText(d.name);
+        texts.addView(name);
+        if (!d.detail.isEmpty()) {
+            TextView detail = label(14, false);
+            detail.setText(d.detail);
+            detail.setTextColor(0xFF9AA4AE);
+            texts.addView(detail);
+        }
+        row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (!d.distance.isEmpty()) {
+            TextView far = label(14, false);
+            far.setText(d.distance);
+            far.setTextColor(0xFF9AA4AE);
+            far.setPadding(dp(12), 0, 0, 0);
+            row.addView(far);
+        }
+        row.setOnClickListener(v -> {
+            setFocused(false);
+            host.pick(d);
+        });
+        return row;
+    }
+
     // ------------------------------------------------------------------ the bar under the map
 
-    /** "Guide on HUD to X" with a Start button. */
+    /** A route ready to follow, with a Start button. */
     void showOffer(String title, String sub) {
         setBar(0xFF22303C, null, title, sub, "Start", host::startNav, false);
     }
@@ -331,16 +552,14 @@ final class MapWindow {
     /** The next turn while guiding; {@code turn} is null while rerouting. */
     void showTurn(Maneuvers.Icon turn, String title, String sub) {
         setBar(0xFF0C5A3C, turn, title, sub, "End", host::stopNav, true);
-        icon.setActive(true);
     }
 
     void hideBar() {
         bar.setVisibility(View.GONE);
-        icon.setActive(false);
     }
 
     private void setBar(int color, Maneuvers.Icon turn, String title, String sub, String action, Runnable run,
-                        boolean guiding) {
+                        boolean whileGuiding) {
         bar.setBackgroundColor(color);
         barIcon.setIcon(turn);
         barIcon.setVisibility(turn == null ? View.GONE : View.VISIBLE);
@@ -349,163 +568,19 @@ final class MapWindow {
         barSub.setVisibility(sub == null || sub.isEmpty() ? View.GONE : View.VISIBLE);
         barButton.setText(action == null ? "" : action);
         barButton.setVisibility(action == null ? View.GONE : View.VISIBLE);
-        barButton.setBackgroundColor(guiding ? 0xFFD9453A : 0xFF1A73E8);
+        barButton.setBackgroundColor(whileGuiding ? 0xFFD9453A : 0xFF1A73E8);
         barAction = run;
         bar.setVisibility(View.VISIBLE);
-        if (!guiding) icon.setActive(false);
-    }
-
-    // ------------------------------------------------------------------ the page
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private void ensureWeb() {
-        if (web != null || destroyed) return;
-        try {
-            web = new WebView(ui);
-        } catch (RuntimeException e) {
-            Log.e(TAG, "No WebView on this device", e);
-            showMessage("This screen has no web view", "The map can't be shown.");
-            return;
-        }
-        WebSettings s = web.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setDatabaseEnabled(true);
-        s.setGeolocationEnabled(true);
-        s.setSupportMultipleWindows(false);
-        s.setJavaScriptCanOpenWindowsAutomatically(false);
-        // Present as ordinary Chrome: Google's sign-in page turns away apps' built-in web views.
-        s.setUserAgentString(s.getUserAgentString().replace("; wv", "").replaceAll("Version/\\d+\\.\\d+ ", ""));
-        CookieManager cookies = CookieManager.getInstance();
-        cookies.setAcceptCookie(true);
-        cookies.setAcceptThirdPartyCookies(web, true);
-        web.setBackgroundColor(0xFF1B1F24);
-        web.addJavascriptInterface(new Bridge(), "Car");
-        web.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
-                Log.d(TAG, "page: " + m.message());
-                return true;
-            }
-
-            @Override
-            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-                // Only Google's own pages get the car's position, and only if the app itself has it.
-                boolean google = origin != null && origin.matches("https://([a-z0-9.-]+\\.)?google\\.[a-z.]+/?");
-                callback.invoke(origin, google && host.hasLocationPermission(), false);
-            }
-        });
-        web.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // The site keeps offering to open the Google Maps app (intent: and market: links): stay here.
-                String scheme = request.getUrl().getScheme();
-                if ("https".equals(scheme) || "http".equals(scheme)) return false;
-                Log.d(TAG, "Not leaving the page for " + request.getUrl());
-                if ("intent".equals(scheme)) {
-                    // Such links carry the web address to use when the app isn't installed.
-                    try {
-                        String fallback = android.content.Intent.parseUri(request.getUrl().toString(),
-                                android.content.Intent.URI_INTENT_SCHEME).getStringExtra("browser_fallback_url");
-                        if (fallback != null && fallback.startsWith("https://")) view.loadUrl(fallback);
-                    } catch (java.net.URISyntaxException ignored) {
-                        // not a link we can read: just stay put
-                    }
-                }
-                return true;
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                view.evaluateJavascript(SETUP_JS, null);
-                CookieManager.getInstance().flush();
-            }
-
-            @Override
-            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-                // The page's process died (the car was short of memory): start a fresh one.
-                Log.w(TAG, "Map page process gone; reloading");
-                main.post(() -> {
-                    if (destroyed) return;
-                    webHolder.removeView(view);
-                    view.destroy();
-                    if (web == view) web = null;
-                    if (!collapsed) ensureWeb();
-                });
-                return true;
-            }
-        });
-        webHolder.addView(web, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        web.loadUrl(HOME);
-    }
-
-    /** The site changes its address without loading a new page, so the address is checked on a timer. */
-    private void checkUrl() {
-        if (web == null || destroyed) return;
-        String url = web.getUrl();
-        if (url == null) return;
-        boolean directions = url.contains("/maps/dir/");
-        if (url.equals(lastUrl) && !retryDest) return;
-        lastUrl = url;
-        retryDest = false;
-        web.evaluateJavascript(SETUP_JS, null);
-        if (directions) web.evaluateJavascript(DEST_JS, null);
-        else host.onNoDestination();
-    }
-
-    private boolean retryDest;
-
-    /**
-     * Asks the page for Google's route from this position; the answer arrives at
-     * {@link Host#onGoogleRoute}. {@code mustBeFresh}: fail rather than hand back the route from
-     * the old starting point (when the car has left that route, the old one is no use).
-     */
-    void requestGoogleRoute(double lat, double lng, boolean mustBeFresh) {
-        if (web == null || destroyed) {
-            host.onGoogleRoute("", 0, 0);
-            return;
-        }
-        web.evaluateJavascript(SETUP_JS, null);
-        web.evaluateJavascript(ROUTE_JS + String.format(java.util.Locale.US, "(%.6f,%.6f,%b)", lat, lng, mustBeFresh), null);
-    }
-
-    /** The page hadn't finished fetching its directions: look again on the next check. */
-    void retryDestination() {
-        retryDest = true;
-    }
-
-    /** Called by the page, on a WebView thread: everything hops to the main thread. */
-    private final class Bridge {
-        @JavascriptInterface
-        public void focus(boolean on) {
-            main.post(() -> setFocused(on));
-        }
-
-        @JavascriptInterface
-        public void dest(String name, double lat, double lng) {
-            main.post(() -> host.onDestination(name, lat, lng));
-        }
-
-        @JavascriptInterface
-        public void route(String line, double seconds, double metres) {
-            main.post(() -> host.onGoogleRoute(line == null ? "" : line, seconds, metres));
-        }
-
-        @JavascriptInterface
-        public void noDest() {
-            main.post(host::onNoDestination);
-        }
     }
 
     // ------------------------------------------------------------------ keyboard focus
 
     /**
-     * An overlay normally never takes keyboard focus, so the app underneath keeps working. While a
-     * text box on the page is in use the window has to take focus for the on-screen keyboard to appear.
+     * An overlay normally never takes keyboard focus, so the app underneath keeps working. While the
+     * search box is in use the window has to take focus for the on-screen keyboard to appear.
      */
     private void setFocused(boolean on) {
-        if (focused == on || destroyed || web == null) return;
+        if (focused == on || destroyed) return;
         focused = on;
         lp.flags = on
                 ? WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
@@ -515,12 +590,13 @@ final class MapWindow {
         InputMethodManager imm = ui.getSystemService(InputMethodManager.class);
         if (on) {
             main.postDelayed(() -> {
-                if (!focused || web == null) return;
-                web.requestFocus();
-                if (imm != null) imm.showSoftInput(web, 0);
+                if (!focused) return;
+                search.requestFocus();
+                if (imm != null) imm.showSoftInput(search, 0);
             }, 150);
-        } else if (imm != null) {
-            imm.hideSoftInputFromWindow(frame.getWindowToken(), 0);
+        } else {
+            if (imm != null) imm.hideSoftInputFromWindow(frame.getWindowToken(), 0);
+            search.clearFocus();
         }
     }
 
@@ -533,7 +609,6 @@ final class MapWindow {
         prefs.setCollapsed(collapsed);
         apply();
         update();
-        if (!collapsed) ensureWeb();
     }
 
     /** First time: the right-hand side of the screen. */
@@ -703,8 +778,7 @@ final class MapWindow {
         public boolean dispatchKeyEvent(KeyEvent event) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && focused) {
                 if (event.getAction() == KeyEvent.ACTION_UP) {
-                    // Back closes the keyboard first, then steps back through the site's pages.
-                    if (web != null && web.canGoBack()) web.goBack();
+                    hideResults();
                     setFocused(false);
                 }
                 return true;

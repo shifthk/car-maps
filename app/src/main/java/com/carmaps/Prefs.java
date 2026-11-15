@@ -25,6 +25,37 @@ final class Prefs {
     boolean avoidHighways() { return p.getBoolean("avoidHighways", false); }
     void setAvoidHighways(boolean v) { p.edit().putBoolean("avoidHighways", v).apply(); }
 
+    boolean darkMap() { return p.getBoolean("dark", false); }
+    void setDarkMap(boolean v) { p.edit().putBoolean("dark", v).apply(); }
+
+    long lastUpdateCheck() { return p.getLong("updateCheck", 0); }
+    void setLastUpdateCheck(long v) { p.edit().putLong("updateCheck", v).apply(); }
+
+    /** Places picked before, newest first. */
+    java.util.List<Router.Dest> recents() {
+        java.util.List<Router.Dest> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(p.getString("recents", "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(Router.Dest.from(a.getJSONObject(i)));
+        } catch (org.json.JSONException ignored) {
+            // a damaged list is just an empty one
+        }
+        return out;
+    }
+
+    void addRecent(Router.Dest d) {
+        java.util.List<Router.Dest> list = recents();
+        list.removeIf(o -> o.name.equals(d.name) && o.detail.equals(d.detail));
+        list.add(0, d);
+        org.json.JSONArray a = new org.json.JSONArray();
+        try {
+            for (int i = 0; i < Math.min(8, list.size()); i++) a.put(list.get(i).json());
+        } catch (org.json.JSONException ignored) {
+            return;
+        }
+        p.edit().putString("recents", a.toString()).apply();
+    }
+
     boolean voice() { return p.getBoolean("voice", true); }
     void setVoice(boolean v) { p.edit().putBoolean("voice", v).apply(); }
 
@@ -35,6 +66,10 @@ final class Prefs {
 
     boolean hudMap() { return p.getBoolean("hudMiniMap", true); }
     void setHudMap(boolean v) { p.edit().putBoolean("hudMiniMap", v).apply(); }
+
+    /** Blank the car's own HUD readouts while the directions are showing. */
+    boolean hudCover() { return p.getBoolean("hudCover", false); }
+    void setHudCover(boolean v) { p.edit().putBoolean("hudCover", v).apply(); }
 
     /** -1: find it automatically. */
     int hudDisplay() { return p.getInt("hudDisplay", -1); }

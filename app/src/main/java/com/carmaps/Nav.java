@@ -31,18 +31,6 @@ final class Nav {
         double durationSec;
         /** secondsAfter[i]: driving time left once step i is finished. */
         double[] secondsAfter;
-        /** True when this follows the route Google drew, false when OpenStreetMap chose the roads itself. */
-        boolean google;
-
-        /** Stretches or shrinks every step's time so the whole trip takes this long (Google's time in traffic). */
-        void scaleDuration(double seconds) {
-            if (seconds <= 0 || durationSec <= 0) return;
-            double k = seconds / durationSec;
-            for (Step s : steps) s.seconds *= k;
-            for (int i = 0; i < secondsAfter.length; i++) secondsAfter[i] *= k;
-            durationSec = seconds;
-        }
-
         /** @param trip the "trip" object of a Valhalla route response */
         static Route parse(JSONObject trip) throws JSONException {
             Route route = new Route();
