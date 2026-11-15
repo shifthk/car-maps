@@ -27,7 +27,7 @@ final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
     private static final String SEARCH = "https://photon.komoot.io/api/";
-    private static final String AGENT = "CarMaps/2.1 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.2 (Android; +https://github.com/shifthk/car-maps)";
     private static final String TOMTOM = "https://api.tomtom.com/";
 
     /** How the last TomTom route request went, for the settings screen. */
@@ -144,7 +144,60 @@ final class Router {
         return trip;
     }
 
-    /** @return places matching what was typed, nearest-first where the names match equally well */
+    /** How the last TomTom search went, for the settings screen. */
+    static volatile String searchStatus = "";
+
+    /** Places matching what was typed: from TomTom when the user has given a key, otherwise (or if it fails) Photon. */
+    static List<Dest> search(String text, Location near, String tomtomKey) throws IOException, JSONException {
+        if (!tomtomKey.isEmpty()) {
+            try {
+                List<Dest> found = tomtomSearch(text, near, tomtomKey);
+                searchStatus = "Search: TomTom";
+                return found;
+            } catch (IOException | JSONException e) {
+                String why = e instanceof JSONException ? "unexpected answer (" + e.getMessage() + ")" : e.getMessage();
+                searchStatus = "TomTom search failed: " + why + " Used the OpenStreetMap search instead.";
+            }
+        }
+        return search(text, near);
+    }
+
+    private static List<Dest> tomtomSearch(String text, Location near, String key) throws IOException, JSONException {
+        StringBuilder url = new StringBuilder(TOMTOM).append("search/2/search/")
+                .append(URLEncoder.encode(text, "UTF-8").replace("+", "%20")).append(".json?key=")
+                .append(URLEncoder.encode(key, "UTF-8")).append("&typeahead=true&limit=8&language=").append(language());
+        if (near != null) {
+            url.append(String.format(Locale.US, "&lat=%.5f&lon=%.5f", near.getLatitude(), near.getLongitude()));
+        }
+        JSONArray results = new JSONObject(http("GET", url.toString(), null)).optJSONArray("results");
+        List<Dest> out = new ArrayList<>();
+        if (results == null) return out;
+        for (int i = 0; i < results.length(); i++) {
+            JSONObject r = results.getJSONObject(i);
+            JSONObject at = r.optJSONObject("position");
+            if (at == null || !at.has("lat") || !at.has("lon")) continue;
+            JSONObject poi = r.optJSONObject("poi");
+            JSONObject address = r.optJSONObject("address");
+            String full = address == null ? "" : address.optString("freeformAddress");
+            String name = poi == null ? "" : poi.optString("name");
+            String detail = full;
+            if (name.isEmpty()) {
+                // An address, street or town: its first part is the name and the rest says where it is.
+                int comma = full.indexOf(", ");
+                name = comma < 0 ? full : full.substring(0, comma);
+                detail = comma < 0 ? "" : full.substring(comma + 2);
+            }
+            if (name.isEmpty()) continue;
+            Dest d = new Dest(name, detail, at.getDouble("lat"), at.getDouble("lon"));
+            if (near != null) {
+                d.distance = Geo.distance(Geo.dist(near.getLatitude(), near.getLongitude(), d.lat, d.lng));
+            }
+            out.add(d);
+        }
+        return out;
+    }
+
+    /** @return places from Photon matching what was typed, nearest-first where the names match equally well */
     static List<Dest> search(String text, Location near) throws IOException, JSONException {
         StringBuilder url = new StringBuilder(SEARCH).append("?limit=8&lang=en&q=")
                 .append(URLEncoder.encode(text, "UTF-8"));
@@ -197,7 +250,7 @@ final class Router {
             c.setReadTimeout(20000);
             c.setRequestMethod(method);
             // The community services ask apps to say who they are; TomTom knows by the key.
-            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.1" : AGENT);
+            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.2" : AGENT);
             c.setRequestProperty("Accept", "application/json");
             if (body != null) {
                 c.setDoOutput(true);

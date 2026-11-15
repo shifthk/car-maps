@@ -329,6 +329,7 @@ final class MapWindow implements TileMap.Listener {
         map.setDark(prefs.darkMap());
         String key = prefs.tomtomKey();
         boolean on = !key.isEmpty() && prefs.traffic();
+        map.setMap(key.isEmpty() ? null : key);
         map.setTraffic(on ? key : null);
         trafficButton.setVisibility(key.isEmpty() ? View.GONE : View.VISIBLE);
         trafficButton.setAlpha(on ? 1f : 0.4f);

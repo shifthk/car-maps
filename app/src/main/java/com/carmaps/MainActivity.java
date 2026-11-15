@@ -116,7 +116,7 @@ public class MainActivity extends Activity {
         root.addView(button("Put the map back in its starting place", v ->
                 MapService.send(this, MapService.ACTION_RESET_POSITION)));
 
-        root.addView(note("The floating window is an OpenStreetMap map. Search for a place, or hold a finger on the "
+        root.addView(note("Search for a place, or hold a finger on the "
                 + "map to drop a pin, and it works out a driving route. Tap Start for turn-by-turn guidance on the "
                 + "map, on the HUD and by voice."));
 
@@ -129,10 +129,12 @@ public class MainActivity extends Activity {
         toggle("Avoid highways", prefs.avoidHighways(), prefs::setAvoidHighways);
 
         // ---- traffic
-        heading("Live traffic");
-        root.addView(note("OpenStreetMap has no traffic. With a free TomTom key, the map shows traffic colours "
-                + "and routes and arrival times allow for it, re-checked every few minutes while driving. "
-                + "Get a key at developer.tomtom.com (free account, no card), then type it here."));
+        heading("TomTom");
+        root.addView(note("Without a key, the map, search and routes come from OpenStreetMap, which has no "
+                + "traffic. With a free TomTom key, all three come from TomTom instead: its map with traffic "
+                + "colours, its place search, and routes and arrival times that allow for traffic, re-checked "
+                + "every few minutes while driving. Get a key at developer.tomtom.com (free account, no card), "
+                + "then type it here."));
         EditText keyBox = new EditText(this);
         keyBox.setHint("TomTom API key");
         keyBox.setSingleLine(true);
@@ -149,13 +151,13 @@ public class MainActivity extends Activity {
             prefs.setTomtomKey(key);
             changed();
             if (key.isEmpty()) {
-                toast("Key removed. Traffic is off.");
+                toast("Key removed. Back to OpenStreetMap.");
                 return;
             }
             toast("Testing the key…");
             new Thread(() -> {
                 final String problem = Router.testKey(key);
-                handler.post(() -> toast(problem == null ? "The key works. Traffic is on." : problem));
+                handler.post(() -> toast(problem == null ? "The key works. TomTom is on." : problem));
             }).start();
         }));
         toggle("Show traffic on the map", prefs.traffic(), prefs::setTraffic);
@@ -246,16 +248,20 @@ public class MainActivity extends Activity {
         startStop.setText(MapService.running ? "Stop the floating map" : "Start the floating map");
         status.setText("Floating map: " + (MapService.running ? "running" : "stopped")
                 + "\nGPS: " + MapService.gpsStatus
-                + "\nTraffic: " + trafficStatus()
+                + "\nTomTom: " + trafficStatus()
                 + "\nHUD: " + Hud.status
                 + "\n" + Hud.describeDisplays(this));
     }
 
     private String trafficStatus() {
-        if (prefs.tomtomKey().isEmpty()) return "off (no TomTom key)";
-        String map = !prefs.traffic() ? "Map traffic: switched off"
+        if (prefs.tomtomKey().isEmpty()) return "off (no key), using OpenStreetMap";
+        String traffic = !prefs.traffic() ? "Map traffic: switched off"
                 : TileMap.trafficStatus.isEmpty() ? "Map traffic: not started" : TileMap.trafficStatus;
-        return map + ". " + Router.trafficStatus;
+        StringBuilder out = new StringBuilder();
+        for (String part : new String[]{TileMap.mapStatus, traffic, Router.searchStatus, Router.trafficStatus}) {
+            if (!part.isEmpty()) out.append(out.length() > 0 ? "\n   " : "").append(part);
+        }
+        return out.toString();
     }
 
     // ------------------------------------------------------------------ small view helpers

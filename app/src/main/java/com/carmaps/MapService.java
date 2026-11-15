@@ -327,9 +327,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     @Override
     public void search(String text, int id) {
         final Location near = last;
+        final String key = prefs.tomtomKey();
         io.execute(() -> {
             try {
-                List<Router.Dest> found = Router.search(text, near);
+                List<Router.Dest> found = Router.search(text, near, key);
                 main.post(() -> window.showResults(id, found, null));
             } catch (Exception e) {
                 Log.w(TAG, "Search failed", e);

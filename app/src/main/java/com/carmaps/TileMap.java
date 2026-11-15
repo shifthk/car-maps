@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.1 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.2 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -68,6 +68,18 @@ final class TileMap extends View {
 
     /** How the traffic layer is doing, for the settings screen. */
     static volatile String trafficStatus = "";
+
+    /** TomTom's own map tiles, used instead of OpenStreetMap's while the user has a TomTom key. */
+    private static final String TOMTOM_MAP = "https://api.tomtom.com/map/1/tile/basic/";
+    private static final long TOMTOM_KEEP_MS = 7L * 24 * 60 * 60 * 1000;
+    /** Which map is being drawn, for the settings screen. */
+    static volatile String mapStatus = "";
+    private volatile String mapKey;
+    /** After TomTom turns the key away, OpenStreetMap's tiles are drawn until this time. */
+    private volatile long mapBlockedUntil;
+    /** In front of every tile's name: "" for OpenStreetMap, "m/" for TomTom's day map, "n/" for its night map. */
+    private String prefix = "";
+    private ColorMatrixColorFilter darkFilter;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -222,10 +234,17 @@ final class TileMap extends View {
                     0, 0.82f, 0, 0, 28,
                     0, 0, 0.82f, 0, 32,
                     0, 0, 0, 1, 0}));
-            tilePaint.setColorFilter(new ColorMatrixColorFilter(m));
-        } else {
-            tilePaint.setColorFilter(null);
+            darkFilter = new ColorMatrixColorFilter(m);
         }
+        invalidate();
+    }
+
+    /** Draws TomTom's map instead of OpenStreetMap's. @param key the user's TomTom key, or null for OpenStreetMap */
+    void setMap(String key) {
+        if (key == null ? mapKey == null : key.equals(mapKey)) return;
+        mapKey = key;
+        mapBlockedUntil = 0;
+        mapStatus = key == null ? "" : "Map: TomTom";
         invalidate();
     }
 
@@ -407,6 +426,10 @@ final class TileMap extends View {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0) return;
         c.drawColor(dark ? 0xFF1B1F24 : 0xFFE8E6E1);
+        boolean tomtom = mapKey != null && SystemClock.elapsedRealtime() >= mapBlockedUntil;
+        // TomTom has a night map of its own; OpenStreetMap's tiles are recoloured instead.
+        prefix = tomtom ? (dark ? "n/" : "m/") : "";
+        tilePaint.setColorFilter(dark && !tomtom ? darkFilter : null);
 
         // Glide the car from its last position to the new one over the second between GPS fixes.
         boolean gliding = false;
@@ -450,7 +473,7 @@ final class TileMap extends View {
         paint.setTextSize(11 * density);
         paint.setTextAlign(Paint.Align.RIGHT);
         paint.setColor(dark ? 0xB0000000 : 0xB0FFFFFF);
-        String credit = trafficKey == null ? "© OpenStreetMap contributors"
+        String credit = !prefix.isEmpty() ? "© TomTom" : trafficKey == null ? "© OpenStreetMap contributors"
                 : "© OpenStreetMap contributors · traffic © TomTom";
         float tw = paint.measureText(credit);
         c.drawRect(w - tw - 10 * density, h - 18 * density, w, h, paint);
@@ -462,7 +485,7 @@ final class TileMap extends View {
     }
 
     private void drawTile(Canvas c, int z, int x, int y) {
-        String key = z + "/" + x + "/" + y;
+        String key = prefix + z + "/" + x + "/" + y;
         visible.add(key);
         Bitmap b = memory.get(key);
         if (b != null) {
@@ -472,7 +495,7 @@ final class TileMap extends View {
         request(key);
         // Until it arrives, stretch the matching part of a lower-zoom tile we already have.
         for (int up = 1; up <= 5 && z - up >= 0; up++) {
-            Bitmap parent = memory.get((z - up) + "/" + (x >> up) + "/" + (y >> up));
+            Bitmap parent = memory.get(prefix + (z - up) + "/" + (x >> up) + "/" + (y >> up));
             if (parent == null) continue;
             int cells = 1 << up, cell = parent.getWidth() / cells;
             if (cell < 1) break;
@@ -615,7 +638,8 @@ final class TileMap extends View {
     private void request(String key) {
         if (released || loading.contains(key) || failed.contains(key)) return;
         loading.add(key);
-        pool.execute(() -> {
+        // OpenStreetMap asks for no more than two downloads at a time; TomTom's tiles use the larger pool.
+        (isTomTom(key) ? trafficPool : pool).execute(() -> {
             // Scrolled away before its turn came: don't fetch a tile nobody is looking at.
             final boolean skipped = !visible.contains(key);
             final Bitmap got = skipped ? null : load(key);
@@ -638,22 +662,42 @@ final class TileMap extends View {
     }
 
     /** From disk if we have it and it's fresh, otherwise from the server (keeping a stale copy as a fallback). */
+    private static boolean isTomTom(String key) {
+        return key.startsWith("m/") || key.startsWith("n/");
+    }
+
     private Bitmap load(String key) {
+        final boolean tomtom = isTomTom(key);
+        final String apiKey = mapKey;
+        if (tomtom && apiKey == null) return null;
         File file = new File(dir, key + ".png");
         BitmapFactory.Options opts = new BitmapFactory.Options();
         opts.inPreferredConfig = Bitmap.Config.RGB_565;
         boolean have = file.isFile() && file.length() > 0;
-        if (have && System.currentTimeMillis() - file.lastModified() < KEEP_MS) {
+        if (have && System.currentTimeMillis() - file.lastModified() < (tomtom ? TOMTOM_KEEP_MS : KEEP_MS)) {
             Bitmap b = BitmapFactory.decodeFile(file.getPath(), opts);
             if (b != null) return b;
         }
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(TILES + key + ".png").openConnection();
+            String url = !tomtom ? TILES + key + ".png"
+                    : TOMTOM_MAP + (key.startsWith("n/") ? "night/" : "main/") + key.substring(2)
+                    + ".png?tileSize=256&key=" + java.net.URLEncoder.encode(apiKey, "UTF-8");
+            c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(10000);
             c.setReadTimeout(15000);
-            c.setRequestProperty("User-Agent", AGENT);
-            if (c.getResponseCode() == 200) {
+            if (!tomtom) c.setRequestProperty("User-Agent", AGENT);
+            int code = c.getResponseCode();
+            if (tomtom && (code == 401 || code == 403 || code == 429)) {
+                // The key is wrong or out of allowance: draw OpenStreetMap's map for a while instead.
+                mapBlockedUntil = SystemClock.elapsedRealtime() + TRAFFIC_BLOCK_MS;
+                mapStatus = (code == 429 ? "Map: the TomTom key's free allowance is used up for now"
+                        : "Map: TomTom didn't accept the key") + "; showing OpenStreetMap";
+                postInvalidate();
+            } else if (tomtom && code == 200) {
+                mapStatus = "Map: TomTom";
+            }
+            if (code == 200) {
                 File parent = file.getParentFile();
                 if (parent != null) parent.mkdirs();
                 File part = new File(file.getPath() + ".part");
@@ -670,7 +714,7 @@ final class TileMap extends View {
                 if (b != null) return b;
             }
         } catch (Exception e) {
-            Log.d(TAG, "Tile " + key + ": " + e);
+            Log.d(TAG, "Tile " + key + ": " + e.getClass().getSimpleName());
         } finally {
             if (c != null) c.disconnect();
         }
