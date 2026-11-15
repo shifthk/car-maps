@@ -28,6 +28,14 @@ final class Prefs {
     boolean darkMap() { return p.getBoolean("dark", false); }
     void setDarkMap(boolean v) { p.edit().putBoolean("dark", v).apply(); }
 
+    /** The user's own TomTom API key; empty for none (then there is no traffic anywhere in the app). */
+    String tomtomKey() { return p.getString("tomtomKey", ""); }
+    void setTomtomKey(String v) { p.edit().putString("tomtomKey", v == null ? "" : v.trim()).apply(); }
+
+    /** Traffic colours on the map (needs the key). */
+    boolean traffic() { return p.getBoolean("traffic", true); }
+    void setTraffic(boolean v) { p.edit().putBoolean("traffic", v).apply(); }
+
     long lastUpdateCheck() { return p.getLong("updateCheck", 0); }
     void setLastUpdateCheck(long v) { p.edit().putLong("updateCheck", v).apply(); }
 

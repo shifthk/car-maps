@@ -20,6 +20,7 @@ import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -117,7 +118,7 @@ public class MainActivity extends Activity {
 
         root.addView(note("The floating window is an OpenStreetMap map. Search for a place, or hold a finger on the "
                 + "map to drop a pin, and it works out a driving route. Tap Start for turn-by-turn guidance on the "
-                + "map, on the HUD and by voice. OpenStreetMap has no live traffic, so arrival times assume clear roads."));
+                + "map, on the HUD and by voice."));
 
         // ---- map
         heading("Guidance");
@@ -126,6 +127,38 @@ public class MainActivity extends Activity {
         toggle("Spoken directions", prefs.voice(), prefs::setVoice);
         toggle("Avoid tolls", prefs.avoidTolls(), prefs::setAvoidTolls);
         toggle("Avoid highways", prefs.avoidHighways(), prefs::setAvoidHighways);
+
+        // ---- traffic
+        heading("Live traffic");
+        root.addView(note("OpenStreetMap has no traffic. With a free TomTom key, the map shows traffic colours "
+                + "and routes and arrival times allow for it, re-checked every few minutes while driving. "
+                + "Get a key at developer.tomtom.com (free account, no card), then type it here."));
+        EditText keyBox = new EditText(this);
+        keyBox.setHint("TomTom API key");
+        keyBox.setSingleLine(true);
+        keyBox.setTextSize(17);
+        keyBox.setTextColor(0xFFF2F4F6);
+        keyBox.setHintTextColor(0xFF9AA4AE);
+        keyBox.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        keyBox.setText(prefs.tomtomKey());
+        keyBox.setMinHeight(dp(56));
+        root.addView(keyBox);
+        root.addView(button("Save and test the key", v -> {
+            final String key = keyBox.getText().toString().trim();
+            prefs.setTomtomKey(key);
+            changed();
+            if (key.isEmpty()) {
+                toast("Key removed. Traffic is off.");
+                return;
+            }
+            toast("Testing the key…");
+            new Thread(() -> {
+                final String problem = Router.testKey(key);
+                handler.post(() -> toast(problem == null ? "The key works. Traffic is on." : problem));
+            }).start();
+        }));
+        toggle("Show traffic on the map", prefs.traffic(), prefs::setTraffic);
 
         // ---- HUD
         heading("Head-up display");
@@ -213,8 +246,16 @@ public class MainActivity extends Activity {
         startStop.setText(MapService.running ? "Stop the floating map" : "Start the floating map");
         status.setText("Floating map: " + (MapService.running ? "running" : "stopped")
                 + "\nGPS: " + MapService.gpsStatus
+                + "\nTraffic: " + trafficStatus()
                 + "\nHUD: " + Hud.status
                 + "\n" + Hud.describeDisplays(this));
+    }
+
+    private String trafficStatus() {
+        if (prefs.tomtomKey().isEmpty()) return "off (no TomTom key)";
+        String map = !prefs.traffic() ? "Map traffic: switched off"
+                : TileMap.trafficStatus.isEmpty() ? "Map traffic: not started" : TileMap.trafficStatus;
+        return map + ". " + Router.trafficStatus;
     }
 
     // ------------------------------------------------------------------ small view helpers

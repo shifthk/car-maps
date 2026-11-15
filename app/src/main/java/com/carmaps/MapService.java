@@ -55,6 +55,8 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private static final long MIN_REROUTE_GAP_MS = 8000;
     private static final int OFF_ROUTE_FIXES = 3;
     private static final double ARRIVE_M = 35;
+    /** While following a TomTom route, ask again this often so the route and arrival time keep up with traffic. */
+    private static final long TRAFFIC_REFRESH_MS = 3 * 60 * 1000;
 
     static volatile boolean running;
     /** For the settings screen. */
@@ -103,6 +105,17 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     /** Which spoken prompts have been given for the coming turn: 0 none, 1 the early one, 2 the final one. */
     private int spokenStage;
     private int spokenStep = -1;
+    private String spokenText = "";
+
+    private final Runnable trafficRefresh = new Runnable() {
+        @Override
+        public void run() {
+            main.postDelayed(this, TRAFFIC_REFRESH_MS);
+            if (navigating && route != null && route.traffic && !routePending && offRouteCount == 0) {
+                requestRoute(true);
+            }
+        }
+    };
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -290,7 +303,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             showProgress(p);
             speakFor(p, l.hasSpeed() ? l.getSpeed() : 0f);
             if (!routePending && offRouteCount >= OFF_ROUTE_FIXES && now - lastRouteRequest > MIN_REROUTE_GAP_MS) {
-                requestRoute();
+                requestRoute(false);
             }
         }
         window.setCar(lat, lng, bearing);
@@ -338,7 +351,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         if (!"Dropped pin".equals(place.name)) prefs.addRecent(place);
         window.showPlace(place);
         window.showMessage("Finding a route…", place.name);
-        requestRoute();
+        requestRoute(false);
     }
 
     @Override
@@ -358,7 +371,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             // "Start" on a failed request: try for the route again.
             if (dest != null && !routePending) {
                 window.showMessage("Finding a route…", dest.name);
-                requestRoute();
+                requestRoute(false);
             }
             return;
         }
@@ -367,6 +380,8 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         offRouteCount = 0;
         spokenStep = -1;
         spokenStage = 0;
+        main.removeCallbacks(trafficRefresh);
+        main.postDelayed(trafficRefresh, TRAFFIC_REFRESH_MS);
         window.setGuiding(true);
         hud.setRoute(route);
         Location l = last;
@@ -394,19 +409,25 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         routePending = false;
         navigating = false;
         nav = null;
+        main.removeCallbacks(trafficRefresh);
         window.setGuiding(false);
         hud.setNav(null);
         hud.setRoute(null);
     }
 
     private void offer() {
+        String traffic = !route.traffic ? (prefs.tomtomKey().isEmpty() ? "" : "  ·  no traffic data")
+                : route.trafficDelaySec >= 60 ? "  ·  +" + Geo.duration(route.trafficDelaySec) + " traffic"
+                : "  ·  live traffic";
         window.showOffer(dest.name, Geo.duration(route.durationSec) + "  ·  " + Geo.distance(route.totalDist)
-                + "  ·  arrive " + Geo.clock(System.currentTimeMillis() + (long) (route.durationSec * 1000)));
+                + "  ·  arrive " + Geo.clock(System.currentTimeMillis() + (long) (route.durationSec * 1000))
+                + traffic);
     }
 
     // ------------------------------------------------------------------ routes
 
-    private void requestRoute() {
+    /** @param refresh a routine re-check for traffic while driving, rather than a new or changed journey */
+    private void requestRoute(boolean refresh) {
         final Router.Dest to = dest;
         final Location from = last;
         if (to == null) return;
@@ -417,13 +438,14 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         }
         final int seq = ++routeSeq;
         final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
+        final String key = prefs.tomtomKey();
         routePending = true;
         lastRouteRequest = SystemClock.elapsedRealtime();
         io.execute(() -> {
             try {
-                Nav.Route found = Nav.Route.parse(Router.route(from, to, tolls, highways));
+                Nav.Route found = Router.find(from, to, tolls, highways, key);
                 main.post(() -> {
-                    if (seq == routeSeq) onRoute(found);
+                    if (seq == routeSeq) onRoute(found, refresh);
                 });
             } catch (Exception e) {
                 Log.w(TAG, "Route failed", e);
@@ -437,8 +459,11 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         });
     }
 
-    private void onRoute(Nav.Route found) {
+    private void onRoute(Nav.Route found, boolean refresh) {
         routePending = false;
+        // A traffic re-check that had to fall back to the router without traffic tells us nothing new,
+        // and one that arrives after the car has left the route is already out of date.
+        if (refresh && navigating && (!found.traffic || offRouteCount > 0)) return;
         route = found;
         if (!navigating) {
             window.showRoute(found, true);
@@ -448,13 +473,20 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         // A new route while driving: carry straight on with it.
         nav = new Nav(found);
         offRouteCount = 0;
+        int stage = spokenStage;
         spokenStep = -1;
         spokenStage = 0;
         window.showRoute(found, false);
         hud.setRoute(found);
         Location l = last;
         if (l != null) {
-            showProgress(nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f));
+            Nav.Progress p = nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f);
+            // The same turn is still coming up on the re-checked route: don't announce it a second time.
+            if (refresh && !p.spoken.isEmpty() && p.spoken.equals(spokenText)) {
+                spokenStep = p.stepIndex + 1;
+                spokenStage = stage;
+            }
+            showProgress(p);
         }
     }
 
@@ -492,6 +524,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             spokenStep = turn;
             spokenStage = 0;
         }
+        spokenText = p.spoken;
         double finalAt = Math.max(60, speed * 6);          // about six seconds out
         double earlyAt = Math.max(350, speed * 22);        // about twenty seconds out
         if (spokenStage < 2 && p.distToManeuver <= finalAt) {

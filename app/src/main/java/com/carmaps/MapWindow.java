@@ -80,7 +80,7 @@ final class MapWindow implements TileMap.Listener {
     private final TileMap map;
     private final ScrollView resultsScroll;
     private final LinearLayout results;
-    private final TextView recenter;
+    private final TextView recenter, trafficButton;
 
     // The bar under the map.
     private final LinearLayout bar;
@@ -196,6 +196,13 @@ final class MapWindow implements TileMap.Listener {
             map.setFollow(true);
             updateRecenter();
         });
+        // Live traffic on and off; only there once a TomTom key has been entered in the settings.
+        trafficButton = roundButton("\uD83D\uDEA6", v -> {
+            prefs.setTraffic(!prefs.traffic());
+            refresh();
+        });
+        trafficButton.setTextSize(20);
+        side.addView(trafficButton);
         side.addView(recenter);
         side.addView(roundButton("+", v -> map.zoomBy(1)));
         side.addView(roundButton("−", v -> map.zoomBy(-1)));
@@ -253,6 +260,7 @@ final class MapWindow implements TileMap.Listener {
 
         wireSearch();
         updateRecenter();
+        refresh();
     }
 
     private TextView label(int sp, boolean bold) {
@@ -319,6 +327,11 @@ final class MapWindow implements TileMap.Listener {
     /** Settings changed. */
     void refresh() {
         map.setDark(prefs.darkMap());
+        String key = prefs.tomtomKey();
+        boolean on = !key.isEmpty() && prefs.traffic();
+        map.setTraffic(on ? key : null);
+        trafficButton.setVisibility(key.isEmpty() ? View.GONE : View.VISIBLE);
+        trafficButton.setAlpha(on ? 1f : 0.4f);
     }
 
     void destroy() {

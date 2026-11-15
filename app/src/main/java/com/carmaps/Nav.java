@@ -31,6 +31,124 @@ final class Nav {
         double durationSec;
         /** secondsAfter[i]: driving time left once step i is finished. */
         double[] secondsAfter;
+        /** True when the route and its times come from TomTom with live traffic. */
+        boolean traffic;
+        /** How much of {@link #durationSec} is delay from traffic. */
+        double trafficDelaySec;
+
+        /** @param r one entry of "routes" in a TomTom Calculate Route response asked for with text instructions */
+        static Route parseTomTom(JSONObject r) throws JSONException {
+            Route route = new Route();
+            List<double[]> pts = new ArrayList<>();
+            JSONArray legs = r.getJSONArray("legs");
+            for (int l = 0; l < legs.length(); l++) {
+                JSONArray points = legs.getJSONObject(l).getJSONArray("points");
+                for (int i = 0; i < points.length(); i++) {
+                    JSONObject p = points.getJSONObject(i);
+                    pts.add(new double[]{p.getDouble("latitude"), p.getDouble("longitude")});
+                }
+            }
+            int n = pts.size();
+            if (n < 2) throw new JSONException("Route has no line");
+            route.lat = new double[n];
+            route.lng = new double[n];
+            route.cum = new double[n];
+            for (int i = 0; i < n; i++) {
+                route.lat[i] = pts.get(i)[0];
+                route.lng[i] = pts.get(i)[1];
+                route.cum[i] = i == 0 ? 0
+                        : route.cum[i - 1] + Geo.dist(route.lat[i - 1], route.lng[i - 1], route.lat[i], route.lng[i]);
+            }
+            route.totalDist = route.cum[n - 1];
+            JSONObject summary = r.getJSONObject("summary");
+            double total = summary.getDouble("travelTimeInSeconds");
+            route.trafficDelaySec = summary.optDouble("trafficDelayInSeconds", 0);
+            route.traffic = true;
+
+            JSONObject guidance = r.optJSONObject("guidance");
+            JSONArray list = guidance == null ? null : guidance.optJSONArray("instructions");
+            if (list == null || list.length() == 0) throw new JSONException("Route has no steps");
+            // Each instruction says where its manoeuvre is and the driving time to reach it from the start.
+            int count = list.length();
+            double[] at = new double[count];
+            for (int i = 0; i < count; i++) {
+                JSONObject m = list.getJSONObject(i);
+                Step step = new Step();
+                step.maneuver = tomTomManeuver(m.optString("maneuver"), m.optString("drivingSide"));
+                step.text = m.optString("message");
+                if (step.text.isEmpty()) step.text = m.optString("street");
+                step.spoken = step.text;
+                int index = Math.max(0, Math.min(n - 1, m.optInt("pointIndex")));
+                step.startDist = route.cum[index];
+                at[i] = m.optDouble("travelTimeInSeconds", 0);
+                route.steps.add(step);
+            }
+            for (int i = 0; i < count; i++) {
+                Step step = route.steps.get(i);
+                boolean lastOne = i == count - 1;
+                step.endDist = Math.max(step.startDist, lastOne ? route.totalDist : route.steps.get(i + 1).startDist);
+                step.seconds = Math.max(0, (lastOne ? total : at[i + 1]) - at[i]);
+            }
+            // The list should open with setting off; if it doesn't, the first stretch still needs a step.
+            if (route.steps.get(0).startDist > 1) {
+                Step first = new Step();
+                first.maneuver = "DEPART";
+                first.text = first.spoken = "Set off";
+                first.endDist = route.steps.get(0).startDist;
+                first.seconds = at[0];
+                route.steps.add(0, first);
+            }
+            // And it should close with arriving, as a step of its own at the very end.
+            if (!"DESTINATION".equals(route.steps.get(route.steps.size() - 1).maneuver)) {
+                Step arrive = new Step();
+                arrive.maneuver = "DESTINATION";
+                arrive.text = arrive.spoken = "Arrive at your destination";
+                arrive.startDist = arrive.endDist = route.totalDist;
+                route.steps.add(arrive);
+            }
+            route.finish();
+            route.durationSec = total;
+            return route;
+        }
+
+        private void finish() {
+            int count = steps.size();
+            secondsAfter = new double[count];
+            double after = 0;
+            for (int i = count - 1; i >= 0; i--) {
+                secondsAfter[i] = after;
+                after += steps.get(i).seconds;
+            }
+            durationSec = after;
+        }
+
+        /** TomTom's manoeuvre codes, as the names {@link Maneuvers} draws. */
+        private static String tomTomManeuver(String code, String drivingSide) {
+            // Where traffic keeps left, U-turns go round to the right and exits leave on the left.
+            boolean keepsLeft = "LEFT".equals(drivingSide);
+            switch (code) {
+                case "ARRIVE": case "ARRIVE_LEFT": case "ARRIVE_RIGHT": return "DESTINATION";
+                case "DEPART": return "DEPART";
+                case "KEEP_RIGHT": return "FORK_RIGHT";
+                case "KEEP_LEFT": return "FORK_LEFT";
+                case "BEAR_RIGHT": return "TURN_SLIGHT_RIGHT";
+                case "BEAR_LEFT": return "TURN_SLIGHT_LEFT";
+                case "TURN_RIGHT": return "TURN_RIGHT";
+                case "TURN_LEFT": return "TURN_LEFT";
+                case "SHARP_RIGHT": return "TURN_SHARP_RIGHT";
+                case "SHARP_LEFT": return "TURN_SHARP_LEFT";
+                case "MAKE_UTURN": case "TRY_MAKE_UTURN": return keepsLeft ? "UTURN_RIGHT" : "UTURN_LEFT";
+                case "ENTER_MOTORWAY": case "ENTER_FREEWAY": case "ENTER_HIGHWAY": case "ENTRANCE_RAMP":
+                    return "MERGE";
+                case "TAKE_EXIT": return keepsLeft ? "RAMP_LEFT" : "RAMP_RIGHT";
+                case "MOTORWAY_EXIT_LEFT": return "RAMP_LEFT";
+                case "MOTORWAY_EXIT_RIGHT": return "RAMP_RIGHT";
+                case "ROUNDABOUT_CROSS": case "ROUNDABOUT_RIGHT": case "ROUNDABOUT_LEFT": case "ROUNDABOUT_BACK":
+                    return "ROUNDABOUT";
+                default: return "STRAIGHT";
+            }
+        }
+
         /** @param trip the "trip" object of a Valhalla route response */
         static Route parse(JSONObject trip) throws JSONException {
             Route route = new Route();
@@ -66,14 +184,7 @@ final class Nav {
             }
             if (route.steps.isEmpty()) throw new JSONException("Route has no steps");
 
-            int count = route.steps.size();
-            route.secondsAfter = new double[count];
-            double after = 0;
-            for (int i = count - 1; i >= 0; i--) {
-                route.secondsAfter[i] = after;
-                after += route.steps.get(i).seconds;
-            }
-            route.durationSec = after;
+            route.finish();
             return route;
         }
 

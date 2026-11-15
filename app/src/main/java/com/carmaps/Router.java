@@ -27,9 +27,72 @@ final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
     private static final String SEARCH = "https://photon.komoot.io/api/";
-    private static final String AGENT = "CarMaps/2.0 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.1 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String TOMTOM = "https://api.tomtom.com/";
+
+    /** How the last TomTom route request went, for the settings screen. */
+    static volatile String trafficStatus = "No route asked for yet";
 
     private Router() {
+    }
+
+    /**
+     * The best driving route: from TomTom, with live traffic, when the user has given a key; otherwise,
+     * or if TomTom fails, from the OpenStreetMap router (no traffic).
+     */
+    static Nav.Route find(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String tomtomKey)
+            throws IOException, JSONException {
+        if (!tomtomKey.isEmpty()) {
+            try {
+                Nav.Route r = Nav.Route.parseTomTom(tomtom(from, to, avoidTolls, avoidHighways, tomtomKey));
+                trafficStatus = "Last route came from TomTom with live traffic"
+                        + (r.trafficDelaySec >= 60 ? " (" + Geo.duration(r.trafficDelaySec) + " delay)" : "");
+                return r;
+            } catch (IOException | JSONException e) {
+                String why = e instanceof JSONException ? "unexpected answer (" + e.getMessage() + ")" : e.getMessage();
+                trafficStatus = "TomTom route failed: " + why + " Used the OpenStreetMap router instead.";
+            }
+        }
+        return Nav.Route.parse(route(from, to, avoidTolls, avoidHighways));
+    }
+
+    /** @return the first entry of "routes" from TomTom's Calculate Route, with text instructions */
+    private static JSONObject tomtom(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String key)
+            throws IOException, JSONException {
+        StringBuilder url = new StringBuilder(TOMTOM).append(String.format(Locale.US,
+                "routing/1/calculateRoute/%.6f,%.6f:%.6f,%.6f/json", from.getLatitude(), from.getLongitude(),
+                to.lat, to.lng));
+        url.append("?key=").append(URLEncoder.encode(key, "UTF-8"))
+                .append("&traffic=true&travelMode=car&routeType=fastest&instructionsType=text&language=")
+                .append(language());
+        if (avoidTolls) url.append("&avoid=tollRoads");
+        if (avoidHighways) url.append("&avoid=motorways");
+        if (from.hasBearing() && from.hasSpeed() && from.getSpeed() > 3f) {
+            url.append("&vehicleHeading=").append(Math.round(from.getBearing()) % 360);
+        }
+        JSONArray routes = new JSONObject(http("GET", url.toString(), null)).optJSONArray("routes");
+        if (routes == null || routes.length() == 0) throw new IOException("No route found.");
+        return routes.getJSONObject(0);
+    }
+
+    /** Tries a TomTom key by fetching one traffic tile. @return null if it works, otherwise what went wrong */
+    static String testKey(String key) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(TOMTOM + "traffic/map/4/tile/flow/relative0/10/942/614.png?key="
+                    + URLEncoder.encode(key, "UTF-8")).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            int code = c.getResponseCode();
+            if (code == 200) return null;
+            if (code == 401 || code == 403) return "TomTom didn't accept the key. Check it was typed exactly.";
+            if (code == 429) return "The key works, but its free allowance is used up for now.";
+            return "TomTom returned error " + code + ".";
+        } catch (IOException e) {
+            return "Couldn't reach TomTom. Check the internet connection.";
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     /** A place: somewhere to go, or a search result. */
@@ -133,7 +196,8 @@ final class Router {
             c.setConnectTimeout(10000);
             c.setReadTimeout(20000);
             c.setRequestMethod(method);
-            c.setRequestProperty("User-Agent", AGENT);
+            // The community services ask apps to say who they are; TomTom knows by the key.
+            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.1" : AGENT);
             c.setRequestProperty("Accept", "application/json");
             if (body != null) {
                 c.setDoOutput(true);
@@ -145,11 +209,18 @@ final class Router {
             int code = c.getResponseCode();
             String text = read(code >= 400 ? c.getErrorStream() : c.getInputStream());
             if (code >= 400) {
-                String message = code == 429 ? "The service is busy. Try again in a moment."
-                        : "The service returned error " + code;
+                boolean tomtom = url.startsWith(TOMTOM);
+                String message = code == 429 ? (tomtom ? "the key's free allowance is used up for now."
+                        : "The service is busy. Try again in a moment.")
+                        : tomtom && (code == 401 || code == 403) ? "the key wasn't accepted."
+                        : "The service returned error " + code + ".";
                 try {
-                    String error = new JSONObject(text).optString("error");
-                    if (!error.isEmpty()) message = error;
+                    JSONObject o = new JSONObject(text);
+                    String error = o.optString("error");
+                    JSONObject detailed = o.optJSONObject("detailedError");
+                    if (detailed != null && !detailed.optString("message").isEmpty() && code != 401 && code != 403 && code != 429) {
+                        message = detailed.optString("message");
+                    } else if (!tomtom && !error.isEmpty()) message = error;
                 } catch (JSONException ignored) {
                     // not JSON: keep the generic message
                 }

@@ -55,12 +55,19 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.0 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.1 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
     private static final long DISK_LIMIT = 150L * 1024 * 1024, DISK_TARGET = 100L * 1024 * 1024;
     private static final long GLIDE_MS = 1000;
+    /** TomTom's traffic flow tiles: see-through, coloured by how slow each road is against its free flow. */
+    private static final String TRAFFIC = "https://api.tomtom.com/traffic/map/4/tile/flow/relative0/";
+    private static final long TRAFFIC_FRESH_MS = 2 * 60 * 1000, TRAFFIC_BLOCK_MS = 5 * 60 * 1000;
+    private static final int TRAFFIC_MIN_ZOOM = 7;
+
+    /** How the traffic layer is doing, for the settings screen. */
+    static volatile String trafficStatus = "";
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -69,6 +76,27 @@ final class TileMap extends View {
         @Override
         protected int sizeOf(String key, Bitmap value) {
             return value.getByteCount();
+        }
+    };
+    private final ExecutorService trafficPool = Executors.newFixedThreadPool(3);
+    /** Traffic tiles live in memory only, and are fetched again once they are a couple of minutes old. */
+    private final LruCache<String, Bitmap> trafficMemory = new LruCache<String, Bitmap>(24 * 1024 * 1024) {
+        @Override
+        protected int sizeOf(String key, Bitmap value) {
+            return value.getByteCount();
+        }
+    };
+    private final java.util.HashMap<String, Long> trafficAt = new java.util.HashMap<>();
+    private final Paint trafficPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    /** The TomTom key while the traffic layer is on, otherwise null. */
+    private volatile String trafficKey;
+    private long trafficBlockedUntil;
+    private final Runnable trafficTick = new Runnable() {
+        @Override
+        public void run() {
+            if (trafficKey == null || released) return;
+            invalidate();   // drawing notices tiles that have gone stale and asks for them again
+            main.postDelayed(this, 60000);
         }
     };
     private final Set<String> loading = new HashSet<>();
@@ -164,8 +192,10 @@ final class TileMap extends View {
     void release() {
         released = true;
         pool.shutdownNow();
+        trafficPool.shutdownNow();
         main.removeCallbacksAndMessages(null);
         memory.evictAll();
+        trafficMemory.evictAll();
     }
 
     // ------------------------------------------------------------------ what to show
@@ -196,6 +226,19 @@ final class TileMap extends View {
         } else {
             tilePaint.setColorFilter(null);
         }
+        invalidate();
+    }
+
+    /** Lays live traffic over the map. @param key the user's TomTom key, or null to turn the layer off */
+    void setTraffic(String key) {
+        if (key == null ? trafficKey == null : key.equals(trafficKey)) return;
+        trafficKey = key;
+        trafficMemory.evictAll();
+        trafficAt.clear();
+        trafficBlockedUntil = 0;
+        trafficStatus = key == null ? "" : "Map traffic: waiting for the first tiles";
+        main.removeCallbacks(trafficTick);
+        if (key != null) main.postDelayed(trafficTick, 60000);
         invalidate();
     }
 
@@ -395,6 +438,7 @@ final class TileMap extends View {
                 // A hair of overlap hides the seams between tiles.
                 dst.set(left, top, (float) (left + size) + 0.5f, (float) (top + size) + 0.5f);
                 drawTile(c, z, wrapped, ty);
+                if (trafficKey != null && z >= TRAFFIC_MIN_ZOOM) drawTraffic(c, z, wrapped, ty);
             }
         }
 
@@ -406,7 +450,8 @@ final class TileMap extends View {
         paint.setTextSize(11 * density);
         paint.setTextAlign(Paint.Align.RIGHT);
         paint.setColor(dark ? 0xB0000000 : 0xB0FFFFFF);
-        String credit = "© OpenStreetMap contributors";
+        String credit = trafficKey == null ? "© OpenStreetMap contributors"
+                : "© OpenStreetMap contributors · traffic © TomTom";
         float tw = paint.measureText(credit);
         c.drawRect(w - tw - 10 * density, h - 18 * density, w, h, paint);
         paint.setColor(dark ? 0xFFD0D6DC : 0xFF333333);
@@ -435,6 +480,73 @@ final class TileMap extends View {
             src.set(px, py, px + cell, py + cell);
             c.drawBitmap(parent, src, dst, tilePaint);
             return;
+        }
+    }
+
+    private void drawTraffic(Canvas c, int z, int x, int y) {
+        String key = "t/" + z + "/" + x + "/" + y;
+        visible.add(key);
+        Bitmap b = trafficMemory.get(key);
+        if (b != null) c.drawBitmap(b, null, dst, trafficPaint);
+        Long at = trafficAt.get(key);
+        long now = SystemClock.elapsedRealtime();
+        // A stale tile stays on screen until its replacement arrives.
+        if (b == null || at == null || now - at > TRAFFIC_FRESH_MS) requestTraffic(key, z + "/" + x + "/" + y, now);
+    }
+
+    private void requestTraffic(String key, String tile, long now) {
+        final String apiKey = trafficKey;
+        if (released || apiKey == null || now < trafficBlockedUntil || loading.contains(key) || failed.contains(key)) {
+            return;
+        }
+        loading.add(key);
+        trafficPool.execute(() -> {
+            final boolean skipped = !visible.contains(key);
+            final int[] code = new int[1];
+            final Bitmap got = skipped ? null : loadTraffic(tile, apiKey, code);
+            main.post(() -> {
+                loading.remove(key);
+                if (released || !apiKey.equals(trafficKey)) return;
+                if (got != null) {
+                    if (trafficAt.size() > 3000) trafficAt.clear();
+                    trafficMemory.put(key, got);
+                    trafficAt.put(key, SystemClock.elapsedRealtime());
+                    trafficStatus = "Map traffic: showing";
+                    invalidate();
+                } else if (code[0] == 401 || code[0] == 403 || code[0] == 429) {
+                    // The key is wrong or out of allowance: asking for every other tile would only fail too.
+                    trafficBlockedUntil = SystemClock.elapsedRealtime() + TRAFFIC_BLOCK_MS;
+                    trafficStatus = code[0] != 429 ? "Map traffic: TomTom didn't accept the key"
+                            : "Map traffic: the key's free allowance is used up for now";
+                } else if (!skipped) {
+                    trafficStatus = "Map traffic: couldn't reach TomTom";
+                    failed.add(key);
+                    main.postDelayed(() -> {
+                        failed.remove(key);
+                        invalidate();
+                    }, 15000);
+                }
+            });
+        });
+    }
+
+    private Bitmap loadTraffic(String tile, String apiKey, int[] code) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(TRAFFIC + tile + ".png?tileSize=256&key="
+                    + java.net.URLEncoder.encode(apiKey, "UTF-8")).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            code[0] = c.getResponseCode();
+            if (code[0] != 200) return null;
+            try (InputStream in = c.getInputStream()) {
+                return BitmapFactory.decodeStream(in);
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "Traffic tile " + tile + ": " + e.getClass().getSimpleName());
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 
