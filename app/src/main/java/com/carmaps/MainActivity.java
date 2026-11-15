@@ -166,7 +166,11 @@ public class MainActivity extends Activity {
         heading("Head-up display");
         toggle("Show directions on the HUD", prefs.hud(), prefs::setHud);
         toggle("Mini map of the route ahead", prefs.hudMap(), prefs::setHudMap);
-        toggle("Blank the car's own HUD readouts while directions show", prefs.hudCover(), prefs::setHudCover);
+        toggle("Cover what the car shows behind the directions", prefs.hudSolid(), prefs::setHudSolid);
+        toggle("Blank the whole HUD while directions show", prefs.hudCover(), prefs::setHudCover);
+        choice("Kind of window on the HUD (change it if the directions don't appear on top)",
+                new String[]{"Second-screen window (as Zeekr Shortcut uses)", "Display-over-apps window"},
+                prefs.hudOverlay() ? 1 : 0, i -> prefs.setHudOverlay(i == 1));
 
         final List<Integer> displayIds = new ArrayList<>();
         List<String> displayNames = new ArrayList<>();
@@ -193,10 +197,10 @@ public class MainActivity extends Activity {
             }
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
-        root.addView(note("The directions are drawn above everything else on the HUD. Move the sliders while the "
-                + "sample is showing to place it. Black areas are see-through on a HUD, so the car's own readouts "
-                + "still show around the directions unless you blank them with the switch above (that hides the "
-                + "car's speed readout on the HUD too)."));
+        root.addView(note("Move the sliders while the sample is showing to place it. Black is unlit on a HUD, so "
+                + "the solid black behind the directions looks like nothing but hides whatever the car shows in "
+                + "that spot; the car's readouts elsewhere on the HUD stay. Blanking the whole HUD hides the "
+                + "car's speed readout too."));
 
         // ---- updates
         heading("App");

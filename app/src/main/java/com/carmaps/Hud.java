@@ -224,6 +224,11 @@ final class Hud {
         return presentation != null ? presentation.isShowing() : panel.isAttachedToWindow();
     }
 
+    /** Which kind of window is up: true for the overlay kind. */
+    private boolean shownAsOverlay() {
+        return overlayWm != null;
+    }
+
     private void evaluate() {
         main.removeCallbacks(evaluate);
         if (!wanted()) {
@@ -238,7 +243,7 @@ final class Hud {
             main.postDelayed(evaluate, RETRY_MS);
             return;
         }
-        if (showing() && shownOn == display.getDisplayId()) {
+        if (showing() && shownOn == display.getDisplayId() && shownAsOverlay() == prefs.hudOverlay()) {
             panel.applyPrefs();
             return;
         }
@@ -250,46 +255,63 @@ final class Hud {
     // ------------------------------------------------------------------ the window
 
     /**
-     * First choice is an overlay window on the HUD's display: the "display over other apps" kind,
-     * which Android stacks above every ordinary window there, including whatever the car itself
-     * shows. It is the highest layer an installed app can use. If the car won't allow one on that
-     * display, a Presentation (an ordinary window on a second display) is the fallback; the car's
-     * own HUD items may then be drawn on top of it.
+     * Two kinds of window can be put on the HUD's display. A Presentation (an ordinary second-screen
+     * window) is what the apps known to work on this car use, so it is tried first; an overlay window
+     * (the "display over other apps" kind) is the other, and the setting swaps the order. Either way
+     * the window itself is see-through: what hides the car's own HUD items is the solid black the
+     * panel paints behind the directions.
      */
     private void show(Display display) {
-        Throwable failure = null;
-        if (Build.VERSION.SDK_INT >= 30 && Settings.canDrawOverlays(context)) {
-            try {
-                Context dc = context.createDisplayContext(display)
-                        .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null);
-                WindowManager wm = dc.getSystemService(WindowManager.class);
-                Panel view = new Panel(dc);
-                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-                        PixelFormat.TRANSLUCENT);
-                lp.alpha = prefs.hudOpacity() / 100f;
-                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
-                lp.setFitInsetsTypes(0);
-                wm.addView(view, lp);
-                overlayWm = wm;
-                overlayLp = lp;
-                panel = view;
-                shownOn = display.getDisplayId();
-                status = "Showing on display " + shownOn + ", on top of everything else";
-                view.applyPrefs();
+        boolean overlayFirst = prefs.hudOverlay();
+        Throwable failure = overlayFirst ? showOverlay(display) : showPresentation(display);
+        if (failure != null) {
+            Log.w(TAG, "First kind of window failed on display " + display.getDisplayId() + "; trying the other", failure);
+            Throwable second = overlayFirst ? showPresentation(display) : showOverlay(display);
+            if (second != null) {
+                Log.e(TAG, "Couldn't open a window on display " + display.getDisplayId(), second);
+                status = "Couldn't draw on display " + display.getDisplayId() + ": " + second.getMessage();
                 return;
-            } catch (Throwable t) {
-                failure = t;
-                overlayWm = null;
-                overlayLp = null;
-                Log.w(TAG, "No overlay window on display " + display.getDisplayId() + "; trying a presentation", t);
             }
         }
+        shownOn = display.getDisplayId();
+        status = "Showing on display " + shownOn + (overlayWm != null ? " (display-over-apps window)" : " (second-screen window)");
+        panel.applyPrefs();
+    }
+
+    /** @return null if it worked */
+    private Throwable showOverlay(Display display) {
+        if (Build.VERSION.SDK_INT < 30) return new UnsupportedOperationException("needs Android 11");
+        if (!Settings.canDrawOverlays(context)) return new SecurityException("display over other apps isn't allowed");
+        try {
+            Context dc = context.createDisplayContext(display)
+                    .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null);
+            WindowManager wm = dc.getSystemService(WindowManager.class);
+            Panel view = new Panel(dc);
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                            | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                    PixelFormat.TRANSLUCENT);
+            lp.alpha = prefs.hudOpacity() / 100f;
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            lp.setFitInsetsTypes(0);
+            wm.addView(view, lp);
+            overlayWm = wm;
+            overlayLp = lp;
+            panel = view;
+            return null;
+        } catch (Throwable t) {
+            overlayWm = null;
+            overlayLp = null;
+            return t;
+        }
+    }
+
+    /** @return null if it worked */
+    private Throwable showPresentation(Display display) {
         Presentation p = null;
         try {
             p = new Presentation(context, display);
@@ -310,11 +332,8 @@ final class Hud {
             p.show();
             presentation = p;
             panel = view;
-            shownOn = display.getDisplayId();
-            status = "Showing on display " + shownOn + " in an ordinary window (the car's own HUD items may cover it)";
-            view.applyPrefs();
+            return null;
         } catch (Throwable t) {
-            failure = t;
             if (p != null) {
                 try {
                     p.dismiss();
@@ -322,8 +341,7 @@ final class Hud {
                     // never shown
                 }
             }
-            Log.e(TAG, "Couldn't open a window on display " + display.getDisplayId(), failure);
-            status = "Couldn't draw on display " + display.getDisplayId() + ": " + failure.getMessage();
+            return t;
         }
     }
 
@@ -395,7 +413,26 @@ final class Hud {
             mapBox.addView(new Edges(c), new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             addView(mapBox);
+            setWillNotDraw(false);
+            backing.setColor(0xFF000000);
             applyPrefs();
+        }
+
+        private final Paint backing = new Paint();
+
+        /**
+         * Solid black behind the directions and the mini map. On a HUD black is unlit, so it looks like
+         * nothing, but being solid it hides whatever the car draws underneath in that area. Without
+         * it the window is see-through there and the car's own items show between the lines.
+         */
+        @Override
+        protected void onDraw(Canvas c) {
+            if (!prefs.hudSolid() || prefs.hudCover()) return;
+            if (!navigating && !testing) return;
+            int[] r = rects(getWidth(), getHeight());
+            int pad = Math.round(r[6] * 0.06f);
+            int right = r[5] > 0 ? r[3] + r[5] : r[0] + r[2];
+            c.drawRect(r[0] - pad, r[1] - pad, right + pad, r[1] + r[6] + pad, backing);
         }
 
         private boolean showMap() {
