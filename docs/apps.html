@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car app links</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #14181c; color: #f2f4f6;
+         font: 20px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 32px 0 10px; color: #9aa4ae; text-transform: uppercase; letter-spacing: .06em; }
+  p { color: #b6c0ca; margin: 6px 0 0; font-size: 17px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid #262b31; }
+  .name { flex: 1; min-width: 0; }
+  .name small { display: block; color: #7d8791; font-size: 14px; overflow-wrap: anywhere; }
+  a.btn, button { display: inline-flex; align-items: center; justify-content: center; min-height: 56px;
+         padding: 0 22px; border-radius: 12px; border: 0; background: #1a73e8; color: #fff;
+         font: inherit; font-weight: 600; text-decoration: none; white-space: nowrap; cursor: pointer; }
+  a.alt { background: #2b323a; font-weight: 400; }
+  form { display: flex; gap: 12px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 240px; min-height: 56px; padding: 0 16px; border-radius: 12px;
+          border: 1px solid #3a424b; background: #1b1f24; color: #f2f4f6; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Car app links</h1>
+  <p>Each <b>Open</b> button opens that app's page in the car's More App store. If Open does nothing, try <b>Alt</b>, which asks the browser in a different way.</p>
+
+  <div id="lists"></div>
+
+  <h2>Any other app</h2>
+  <form id="custom">
+    <input id="pkg" placeholder="Package name, e.g. com.waze" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <button type="submit">Open</button>
+  </form>
+  <p>The package name is the part after <code>id=</code> in the app's Google Play web address.</p>
+</main>
+
+<script>
+  var groups = [
+    ["Navigation", [
+      ["Waze", "com.waze"],
+      ["Google Maps", "com.google.android.apps.maps"],
+      ["HERE WeGo", "com.here.app.maps"],
+      ["TomTom GO Navigation", "com.tomtom.gplay.navapp"]
+    ]],
+    ["Charging", [
+      ["PlugShare", "com.xatori.Plugshare"],
+      ["A Better Routeplanner", "com.iternio.abrpapp"]
+    ]],
+    ["Music and audio", [
+      ["Spotify", "com.spotify.music"],
+      ["YouTube Music", "com.google.android.apps.youtube.music"],
+      ["Apple Music", "com.apple.android.music"],
+      ["TuneIn Radio", "tunein.player"],
+      ["Pocket Casts", "au.com.shiftyjelly.pocketcasts"],
+      ["Audible", "com.audible.application"]
+    ]],
+    ["Video (parked)", [
+      ["YouTube", "com.google.android.youtube"],
+      ["Netflix", "com.netflix.mediaclient"],
+      ["Disney+", "com.disney.disneyplus"],
+      ["Prime Video", "com.amazon.avod.thirdpartyclient"],
+      ["Stan", "au.com.stan.and"],
+      ["ABC iview", "au.net.abc.iview"]
+    ]],
+    ["Other", [
+      ["Home Assistant", "io.homeassistant.companion.android"],
+      ["Chrome", "com.android.chrome"]
+    ]]
+  ];
+
+  function market(id) { return "market://details?id=" + encodeURIComponent(id); }
+  function intent(id) {
+    return "intent://details?id=" + encodeURIComponent(id) + "#Intent;scheme=market;package=com.market;end";
+  }
+
+  var root = document.getElementById("lists");
+  groups.forEach(function (g) {
+    var h = document.createElement("h2");
+    h.textContent = g[0];
+    root.appendChild(h);
+    var ul = document.createElement("ul");
+    g[1].forEach(function (app) {
+      var li = document.createElement("li");
+      var name = document.createElement("div");
+      name.className = "name";
+      name.textContent = app[0];
+      var small = document.createElement("small");
+      small.textContent = app[1];
+      name.appendChild(small);
+      var open = document.createElement("a");
+      open.className = "btn";
+      open.href = market(app[1]);
+      open.textContent = "Open";
+      var alt = document.createElement("a");
+      alt.className = "btn alt";
+      alt.href = intent(app[1]);
+      alt.textContent = "Alt";
+      li.appendChild(name);
+      li.appendChild(open);
+      li.appendChild(alt);
+      ul.appendChild(li);
+    });
+    root.appendChild(ul);
+  });
+
+  document.getElementById("custom").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var id = document.getElementById("pkg").value.trim();
+    if (id) location.href = market(id);
+  });
+</script>
+</body>
+</html>
