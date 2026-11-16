@@ -530,31 +530,17 @@ final class Hud {
         }
 
         /**
-         * The directions sit to the left of a gap, at the height and position the settings give (the
-         * HUD's picture can be cropped by its optics, so they may need to be smaller than the display);
-         * the mini map is to the right of the gap. The map's place is kept even when the map is off, so the gap stays where
-         * it was put. The mini map's width and height are set separately, each as a percentage of the
-         * HUD's height, and it is centred top to bottom.
+         * Each panel sits in the box the settings give it, in thousandths of the HUD's width and
+         * height; the settings screen lets the boxes be dragged and resized. The space between them is
+         * whatever the boxes leave, which is how the car's own speed readout is kept clear.
          *
          * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
         private int[] rects(int w, int h) {
-            int infoH = Math.max(48, Math.min(h, Math.round(h * prefs.hudInfoSize() / 100f)));
-            int infoTop = Math.round((h - infoH) * prefs.hudInfoY() / 100f);
-            int infoW = Math.round(infoH * 2.6f);
-            int mapW = Math.max(24, Math.min(w / 2, Math.round(h * prefs.hudMapW() / 100f)));
-            int mapH = Math.max(24, Math.min(h, Math.round(h * prefs.hudMapH() / 100f)));
-            int smallest = Math.round(h * 0.08f);
-            int gap = Math.max(smallest, Math.round(w * prefs.hudGap() / 100f));
-            if (infoW + gap + mapW > w) {
-                // Too wide for the HUD: the directions narrow first, then the gap gives way.
-                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(infoH * 0.8f)));
-                infoW = Math.max(0, w - mapW - gap);
-            }
-            int total = infoW + gap + mapW;
-            int left = Math.round(Math.max(0, w - total) * prefs.hudX() / 100f);
-            int mapTop = Math.max(0, (h - mapH) / 2);
-            return new int[]{left, infoTop, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, infoH, mapH};
+            int[] i = prefs.hudBox(Prefs.INFO), m = prefs.hudBox(Prefs.MINIMAP);
+            return new int[]{w * i[0] / 1000, h * i[1] / 1000, Math.max(1, w * i[2] / 1000),
+                    w * m[0] / 1000, h * m[1] / 1000, showMap() ? Math.max(1, w * m[2] / 1000) : 0,
+                    Math.max(1, h * i[3] / 1000), Math.max(1, h * m[3] / 1000)};
         }
     }
 
@@ -606,27 +592,25 @@ final class Hud {
             boolean live = navigating && p != null && !p.offRoute;
             Nav.LaneSpot spot = live ? p.lanes : null;
             float pad = h * 0.04f;
-            // The settings' arrow and text size; the text still shrinks where it would run out of room.
-            float s = prefs.hudText() / 100f;
 
             if (w >= h * 2f) {
                 // Wide: arrow on the left, distance and instruction beside it, arrival line along the bottom.
-                float iconSize = Math.min(h * 0.62f * s, h * 0.75f);
+                float iconSize = Math.min(h * 0.62f, w * 0.3f);
                 float textLeft = pad;
                 if (ic != null) {
                     Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
                     textLeft += iconSize;
                 }
-                fit(big, d, h * 0.32f * s, w - textLeft - pad);
+                fit(big, d, h * 0.32f, w - textLeft - pad);
                 float y = pad * 0.5f - big.ascent();
                 c.drawText(d, textLeft, y, big);
-                small.setTextSize(h * 0.14f * s);
+                fit(small, t, h * 0.14f, Math.max(10, w - textLeft - pad) * 1.6f);
                 y += big.descent() - small.ascent();
                 c.drawText(TextUtils.ellipsize(t, small, Math.max(10, w - textLeft - pad), TextUtils.TruncateAt.END)
                         .toString(), textLeft, y, small);
             } else {
                 // Narrower: arrow and distance across the top, the instruction on up to two lines under them.
-                float iconSize = Math.min(Math.min(h * 0.46f, w * 0.48f) * s, Math.min(h * 0.6f, w * 0.7f));
+                float iconSize = Math.min(h * 0.46f, w * 0.48f);
                 float textLeft = pad;
                 if (ic != null) {
                     Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
@@ -634,7 +618,7 @@ final class Hud {
                 }
                 fit(big, d, iconSize * 0.6f, w - textLeft - pad);
                 c.drawText(d, textLeft, iconSize * 0.5f - (big.ascent() + big.descent()) / 2f, big);
-                small.setTextSize(Math.min(h * 0.1f, w * 0.09f) * s);
+                small.setTextSize(Math.min(h * 0.1f, w * 0.09f));
                 android.text.StaticLayout lines = android.text.StaticLayout.Builder
                         .obtain(t, 0, t.length(), small, (int) Math.max(10, w - pad * 2))
                         .setMaxLines(2)
@@ -648,10 +632,10 @@ final class Hud {
 
             if (spot != null) {
                 // Coming up to a junction with marked lanes: the lanes to be in take the bottom line.
-                float cell = Math.min(h * 0.24f * s, (w - pad) / spot.arrows.length);
+                float cell = Math.min(h * 0.24f, (w - pad) / spot.arrows.length);
                 Lanes.draw(c, spot, pad, h - cell, cell, shape, dim);
             } else {
-                fit(foot, f, (w >= h * 2f ? h * 0.16f : h * 0.12f) * s, w - pad * 2);
+                fit(foot, f, w >= h * 2f ? h * 0.16f : h * 0.12f, w - pad * 2);
                 c.drawText(f, pad, h - pad - foot.descent(), foot);
             }
         }

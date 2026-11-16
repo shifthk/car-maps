@@ -47,6 +47,8 @@ public class MainActivity extends Activity {
     private Updater updater;
     private LinearLayout root;
     private TextView status, usage;
+    /** The HUD panel editor, redrawn when other HUD settings change (the circle, the mini map switch). */
+    private HudLayoutView hudLayout;
     private Button startStop, overlayButton, locationButton, backgroundButton;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -195,13 +197,31 @@ public class MainActivity extends Activity {
         choice("HUD display", displayNames.toArray(new String[0]), chosen,
                 i -> prefs.setHudDisplay(displayIds.get(i)));
 
-        slider("Gap in the middle (for the car's speed readout)", 0, 70, prefs.hudGap(), prefs::setHudGap);
-        slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
-        slider("Directions size", 30, 100, prefs.hudInfoSize(), prefs::setHudInfoSize);
-        slider("Directions up / down", 0, 100, prefs.hudInfoY(), prefs::setHudInfoY);
-        slider("Arrow and text size in the directions", 50, 150, prefs.hudText(), prefs::setHudText);
-        slider("Mini map width", 30, 300, prefs.hudMapW(), prefs::setHudMapW);
-        slider("Mini map height", 30, 100, prefs.hudMapH(), prefs::setHudMapH);
+        root.addView(note("Where the panels go: drag a box to move it, drag its corner square to resize it. "
+                + "The HUD shows a sample while you do, with the arrow and text sized to fit each box. Leave "
+                + "the middle clear for the car's speed readout (the dashed circle)."));
+        final HudLayoutView layout = new HudLayoutView(this, prefs, new HudLayoutView.Listener() {
+            @Override
+            public void onStart() {
+                if (MapService.running) MapService.send(MainActivity.this, MapService.ACTION_HUD_TEST);
+                else toast("Start the floating map to see the panels on the HUD");
+            }
+
+            @Override
+            public void onChange() {
+                changed();
+            }
+        });
+        LinearLayout.LayoutParams layoutLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        layoutLp.setMargins(0, dp(6), 0, dp(6));
+        root.addView(layout, layoutLp);
+        hudLayout = layout;
+        root.addView(button("Put the panels back where they started", v -> {
+            prefs.resetHudBoxes();
+            layout.reload();
+            changed();
+        }));
         toggle("Map of the roads around the car when not following a route", prefs.hudSurround(),
                 prefs::setHudSurround);
         slider("Empty circle in the middle of that map (for the car's speed readout)", 0, 100,
@@ -214,9 +234,7 @@ public class MainActivity extends Activity {
             }
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
-        root.addView(note("The directions sit to the left of the gap and the mini map to the right. Move the "
-                + "sliders while the sample is showing to place them. Black is unlit on a HUD, so only the "
-                + "arrow, text and route line show."));
+        root.addView(note("Black is unlit on a HUD, so only the arrow, text and route line show."));
 
         // ---- updates
         heading("App");
@@ -253,6 +271,7 @@ public class MainActivity extends Activity {
 
     /** A setting changed: tell the running service. */
     private void changed() {
+        if (hudLayout != null) hudLayout.invalidate();
         MapService.send(this, MapService.ACTION_REFRESH);
     }
 

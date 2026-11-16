@@ -146,31 +146,65 @@ final class Prefs {
     int hudDisplay() { return p.getInt("hudDisplay", -1); }
     void setHudDisplay(int v) { p.edit().putInt("hudDisplay", v).apply(); }
 
-    /** 0 = far left, 100 = far right. */
-    int hudX() { return p.getInt("hudX", 50); }
-    void setHudX(int v) { p.edit().putInt("hudX", v).apply(); }
 
-    /** Width of the empty gap between the directions and the mini map, as a percentage of the HUD's width. */
-    int hudGap() { return p.getInt("hudGap", 30); }
-    void setHudGap(int v) { p.edit().putInt("hudGap", v).apply(); }
 
-    /** The mini map's width and height, each as a percentage of the HUD's height. */
-    int hudMapW() { return p.getInt("hudMapW", 100); }
-    void setHudMapW(int v) { p.edit().putInt("hudMapW", v).apply(); }
 
-    int hudMapH() { return p.getInt("hudMapH", 100); }
-    void setHudMapH(int v) { p.edit().putInt("hudMapH", v).apply(); }
 
-    /** Height of the directions as a percentage of the HUD's height, and where they sit (0 top, 100 bottom). */
-    int hudInfoSize() { return p.getInt("hudInfoSize", 70); }
-    void setHudInfoSize(int v) { p.edit().putInt("hudInfoSize", v).apply(); }
 
-    /** Size of the arrows and text inside the directions, as a percentage of their normal size. */
-    int hudText() { return p.getInt("hudText", 100); }
-    void setHudText(int v) { p.edit().putInt("hudText", v).apply(); }
 
-    int hudInfoY() { return p.getInt("hudInfoY", 50); }
-    void setHudInfoY(int v) { p.edit().putInt("hudInfoY", v).apply(); }
+
+    // ---- where the two HUD panels sit: {left, top, width, height} in thousandths of the HUD's width and height
+
+    static final int INFO = 0, MINIMAP = 1;
+    private static final String[] BOX_KEYS = {"hudBoxInfo", "hudBoxMap"};
+
+    int[] hudBox(int which) {
+        String v = p.getString(BOX_KEYS[which], null);
+        if (v != null) {
+            try {
+                String[] t = v.split(",");
+                return new int[]{Integer.parseInt(t[0]), Integer.parseInt(t[1]), Integer.parseInt(t[2]),
+                        Integer.parseInt(t[3])};
+            } catch (RuntimeException ignored) {
+                // fall through to the layout the older sliders gave
+            }
+        }
+        return legacyBoxes()[which];
+    }
+
+    void setHudBox(int which, int[] b) {
+        p.edit().putString(BOX_KEYS[which], b[0] + "," + b[1] + "," + b[2] + "," + b[3]).apply();
+    }
+
+    void resetHudBoxes() {
+        p.edit().remove(BOX_KEYS[0]).remove(BOX_KEYS[1])
+                .remove("hudGap").remove("hudX").remove("hudInfoSize").remove("hudInfoY")
+                .remove("hudMapW").remove("hudMapH").apply();
+    }
+
+    /**
+     * The two panels where versions up to 2.11 put them from their sliders (gap, left/right, size,
+     * up/down, mini map width and height), worked out for a 1440 x 480 HUD, so updating moves nothing.
+     */
+    private int[][] legacyBoxes() {
+        int w = 1440, h = 480;
+        int infoH = Math.max(48, Math.min(h, Math.round(h * p.getInt("hudInfoSize", 70) / 100f)));
+        int infoTop = Math.round((h - infoH) * p.getInt("hudInfoY", 50) / 100f);
+        int infoW = Math.round(infoH * 2.6f);
+        int mapW = Math.max(24, Math.min(w / 2, Math.round(h * p.getInt("hudMapW", 100) / 100f)));
+        int mapH = Math.max(24, Math.min(h, Math.round(h * p.getInt("hudMapH", 100) / 100f)));
+        int smallest = Math.round(h * 0.08f);
+        int gap = Math.max(smallest, Math.round(w * p.getInt("hudGap", 30) / 100f));
+        if (infoW + gap + mapW > w) {
+            gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(infoH * 0.8f)));
+            infoW = Math.max(0, w - mapW - gap);
+        }
+        int left = Math.round(Math.max(0, w - infoW - gap - mapW) * p.getInt("hudX", 50) / 100f);
+        int mapTop = Math.max(0, (h - mapH) / 2);
+        return new int[][]{
+                {left * 1000 / w, infoTop * 1000 / h, Math.max(50, infoW * 1000 / w), infoH * 1000 / h},
+                {(left + infoW + gap) * 1000 / w, mapTop * 1000 / h, mapW * 1000 / w, mapH * 1000 / h}};
+    }
 
     /** A map of the roads around the car on the HUD while no route is being followed. */
     boolean hudSurround() { return p.getBoolean("hudSurround", true); }
