@@ -585,8 +585,9 @@ final class Hud {
                     MeasureSpec.makeMeasureSpec(Math.max(1, h), MeasureSpec.EXACTLY));
             info.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
-            idle.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
+            int[] k = cardRect(w, h);
+            idle.measure(MeasureSpec.makeMeasureSpec(k[2], MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(k[3], MeasureSpec.EXACTLY));
             mapBox.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[5]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[7]), MeasureSpec.EXACTLY));
         }
@@ -596,7 +597,8 @@ final class Hud {
             int[] p = rects(r - l, b - t);
             around.layout(0, 0, r - l, b - t);
             info.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
-            idle.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
+            int[] k = cardRect(r - l, b - t);
+            idle.layout(k[0], k[1], k[0] + k[2], k[1] + k[3]);
             mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + Math.max(1, p[7]));
         }
 
@@ -623,6 +625,13 @@ final class Hud {
          *
          * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
+        /** The now playing / clock card's box: {left, top, width, height}. */
+        private int[] cardRect(int w, int h) {
+            int[] c = prefs.hudBox(Prefs.CARD);
+            return new int[]{w * c[0] / 1000, h * c[1] / 1000, Math.max(1, w * c[2] / 1000),
+                    Math.max(1, h * c[3] / 1000)};
+        }
+
         private int[] rects(int w, int h) {
             int[] i = prefs.hudBox(Prefs.INFO), m = prefs.hudBox(Prefs.MINIMAP);
             return new int[]{w * i[0] / 1000, h * i[1] / 1000, Math.max(1, w * i[2] / 1000),

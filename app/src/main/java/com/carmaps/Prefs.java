@@ -155,8 +155,9 @@ final class Prefs {
 
     // ---- where the two HUD panels sit: {left, top, width, height} in thousandths of the HUD's width and height
 
-    static final int INFO = 0, MINIMAP = 1;
-    private static final String[] BOX_KEYS = {"hudBoxInfo", "hudBoxMap"};
+    /** CARD: the now playing card or the clock, shown while no route is being followed. */
+    static final int INFO = 0, MINIMAP = 1, CARD = 2;
+    private static final String[] BOX_KEYS = {"hudBoxInfo", "hudBoxMap", "hudBoxCard"};
 
     int[] hudBox(int which) {
         String v = p.getString(BOX_KEYS[which], null);
@@ -169,6 +170,8 @@ final class Prefs {
                 // fall through to the layout the older sliders gave
             }
         }
+        // The card started out in the directions' box, so until it is moved it stays there.
+        if (which == CARD) return hudBox(INFO);
         return legacyBoxes()[which];
     }
 
@@ -177,7 +180,7 @@ final class Prefs {
     }
 
     void resetHudBoxes() {
-        p.edit().remove(BOX_KEYS[0]).remove(BOX_KEYS[1])
+        p.edit().remove(BOX_KEYS[0]).remove(BOX_KEYS[1]).remove(BOX_KEYS[2])
                 .remove("hudGap").remove("hudX").remove("hudInfoSize").remove("hudInfoY")
                 .remove("hudMapW").remove("hudMapH").apply();
     }

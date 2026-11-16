@@ -197,14 +197,28 @@ public class MainActivity extends Activity {
         choice("HUD display", displayNames.toArray(new String[0]), chosen,
                 i -> prefs.setHudDisplay(displayIds.get(i)));
 
+        choice("When not following a route, the HUD shows",
+                new String[]{"Nothing", "Map of the roads around the car", "Now playing on Spotify",
+                        "Time and date"},
+                prefs.hudIdle(), prefs::setHudIdle);
+
         root.addView(note("Where the panels go: drag a box to move it, drag its corner square to resize it. "
-                + "The HUD shows a sample while you do, with the arrow and text sized to fit each box. Leave "
+                + "The HUD follows while you do, with the arrow and text sized to fit each box. Leave "
                 + "the middle clear for the car's speed readout (the dashed circle)."));
         final HudLayoutView layout = new HudLayoutView(this, prefs, new HudLayoutView.Listener() {
             @Override
             public void onStart() {
-                if (MapService.running) MapService.send(MainActivity.this, MapService.ACTION_HUD_TEST);
-                else toast("Start the floating map to see the panels on the HUD");
+                if (!MapService.running) {
+                    toast("Start the floating map to see the panels on the HUD");
+                } else if (!hudLayout.isIdle()) {
+                    MapService.send(MainActivity.this, MapService.ACTION_HUD_TEST);
+                } else {
+                    // The card itself is already on the HUD while no route is being followed.
+                    int idle = prefs.hudIdle();
+                    if (idle != Prefs.IDLE_MUSIC && idle != Prefs.IDLE_CLOCK) {
+                        toast("Choose Now playing or Time and date above to see the card on the HUD");
+                    }
+                }
             }
 
             @Override
@@ -212,20 +226,23 @@ public class MainActivity extends Activity {
                 changed();
             }
         });
+        hudLayout = layout;
+        int idleNow = prefs.hudIdle();
+        boolean startIdle = idleNow == Prefs.IDLE_MUSIC || idleNow == Prefs.IDLE_CLOCK;
+        layout.setIdle(startIdle);
+        choice("Arrange the HUD for",
+                new String[]{"Following a route (directions and mini map)",
+                        "Not following a route (now playing / clock card)"},
+                startIdle ? 1 : 0, i -> layout.setIdle(i == 1));
         LinearLayout.LayoutParams layoutLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         layoutLp.setMargins(0, dp(6), 0, dp(6));
         root.addView(layout, layoutLp);
-        hudLayout = layout;
         root.addView(button("Put the panels back where they started", v -> {
             prefs.resetHudBoxes();
             layout.reload();
             changed();
         }));
-        choice("When not following a route, the HUD shows",
-                new String[]{"Nothing", "Map of the roads around the car", "Now playing on Spotify (in the "
-                        + "Directions box)", "Time and date (in the Directions box)"},
-                prefs.hudIdle(), prefs::setHudIdle);
         slider("Empty circle in the middle of that map (for the car's speed readout)", 0, 100,
                 prefs.hudHole(), prefs::setHudHole);
         slider("Brightness", 20, 100, prefs.hudOpacity(), prefs::setHudOpacity);
