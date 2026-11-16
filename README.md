@@ -6,6 +6,7 @@ An OpenStreetMap map in a floating window for an Android car screen (built for t
   - Tap the round button on the window's top right corner to hide or show the map.
   - Drag the round button to move the window; drag the grip in the bottom left corner to resize it.
   - Drag the map to move it, pinch or double-tap to zoom. The ◎ button goes back to following the car.
+  - The **$** button switches between allowing and avoiding toll roads (crossed out in red while avoiding). If a route is showing or being followed, it is worked out again straight away.
 - **Finding somewhere**: type in the search box (results appear as you type, nearest first), pick one of your recent places, or hold a finger on the map to drop a pin.
 - **Route**: the app draws the driving route and shows its time, distance and arrival time. Tap **Start**.
 - **Guidance**: the next turn shows in the bar under the map, on the HUD (arrow, distance, instruction, arrival time, and a mini map of the route ahead with the car pointing up), and is spoken if the car has a text-to-speech engine. Leave the route and it finds a new one.

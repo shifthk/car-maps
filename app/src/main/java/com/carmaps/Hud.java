@@ -434,7 +434,7 @@ final class Hud {
             // Two separate patches, so the gap between them stays clear for the car's own readouts.
             int inner = Math.min(pad, Math.max(0, (r[3] - r[0] - r[2]) / 2));
             c.drawRect(r[0] - pad, r[1] - pad, r[0] + r[2] + inner, r[1] + r[6] + pad, backing);
-            if (r[5] > 0) c.drawRect(r[3] - inner, r[1] - pad, r[3] + r[5] + pad, r[1] + r[6] + pad, backing);
+            if (r[5] > 0) c.drawRect(r[3] - inner, r[4] - pad, r[3] + r[5] + pad, r[4] + r[7] + pad, backing);
         }
 
         private boolean showMap() {
@@ -467,14 +467,14 @@ final class Hud {
             info.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
             mapBox.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[5]), MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
+                    MeasureSpec.makeMeasureSpec(Math.max(1, r[7]), MeasureSpec.EXACTLY));
         }
 
         @Override
         protected void onLayout(boolean changed, int l, int t, int r, int b) {
             int[] p = rects(r - l, b - t);
             info.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
-            mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + p[6]);
+            mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + Math.max(1, p[7]));
         }
 
         /**
@@ -482,12 +482,16 @@ final class Hud {
          * empty for what the car itself shows in the middle of the HUD (its speed readout). The map's
          * place is kept even when the map is off, so the gap stays where it was put.
          *
-         * @return {info left, info top, info width, map left, map top, map width, height}
+         * The mini map's width and height are set separately, each as a percentage of the directions'
+         * height; it is centred top to bottom on the directions.
+         *
+         * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
         private int[] rects(int w, int h) {
             int height = Math.max(48, Math.min(h, Math.round(h * prefs.hudSize() / 100f)));
             int infoW = Math.round(height * 2.6f);
-            int mapW = Math.round(height * 1.0f);
+            int mapW = Math.max(24, Math.min(w / 2, Math.round(height * prefs.hudMapW() / 100f)));
+            int mapH = Math.max(24, Math.min(h, Math.round(height * prefs.hudMapH() / 100f)));
             int smallest = Math.round(height * 0.08f);
             int gap = Math.max(smallest, Math.round(w * prefs.hudGap() / 100f));
             if (infoW + gap + mapW > w) {
@@ -498,7 +502,8 @@ final class Hud {
             int total = infoW + gap + mapW;
             int left = Math.round(Math.max(0, w - total) * prefs.hudX() / 100f);
             int top = Math.round(Math.max(0, h - height) * prefs.hudY() / 100f);
-            return new int[]{left, top, infoW, left + infoW + gap, top, showMap() ? mapW : 0, height};
+            int mapTop = Math.max(0, Math.min(h - mapH, top + (height - mapH) / 2));
+            return new int[]{left, top, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, height, mapH};
         }
     }
 
@@ -594,11 +599,11 @@ final class Hud {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(h * 0.045f);
+            paint.setStrokeWidth(Math.min(w, h) * 0.045f);
             paint.setColor(0xFF35E0FF);
             c.drawPath(path, paint);
 
-            drawCar(c, h, cx, cy);
+            drawCar(c, Math.min(w, h), cx, cy);
         }
 
         /** What the mini map looks like, for placing the panel when no route is being followed. */
@@ -610,10 +615,10 @@ final class Hud {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(h * 0.045f);
+            paint.setStrokeWidth(Math.min(w, h) * 0.045f);
             paint.setColor(0xFF35E0FF);
             c.drawPath(path, paint);
-            drawCar(c, h, cx, cy);
+            drawCar(c, Math.min(w, h), cx, cy);
         }
 
         private void drawCar(Canvas c, float h, float cx, float cy) {

@@ -99,6 +99,13 @@ final class Prefs {
     int hudGap() { return p.getInt("hudGap", 30); }
     void setHudGap(int v) { p.edit().putInt("hudGap", v).apply(); }
 
+    /** The mini map's width and height, each as a percentage of the directions' height. */
+    int hudMapW() { return p.getInt("hudMapW", 100); }
+    void setHudMapW(int v) { p.edit().putInt("hudMapW", v).apply(); }
+
+    int hudMapH() { return p.getInt("hudMapH", 100); }
+    void setHudMapH(int v) { p.edit().putInt("hudMapH", v).apply(); }
+
     /** 0 = top, 100 = bottom. */
     int hudY() { return p.getInt("hudY", 50); }
     void setHudY(int v) { p.edit().putInt("hudY", v).apply(); }

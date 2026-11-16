@@ -405,6 +405,21 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         }
     }
 
+    @Override
+    public void tollsChanged() {
+        final String now = prefs.avoidTolls() ? "Avoiding tolls" : "Tolls allowed";
+        if (dest == null) {
+            window.showMessage(now, "Used for the next route");
+            main.postDelayed(() -> {
+                if (dest == null) window.hideBar();
+            }, 2500);
+            return;
+        }
+        // A route is showing or being followed: work it out again with the new choice.
+        if (!navigating) window.showMessage("Finding a route…", now + "  ·  " + dest.name);
+        requestRoute(false);
+    }
+
     private void endNav() {
         routeSeq++;
         routePending = false;

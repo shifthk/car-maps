@@ -190,6 +190,8 @@ public class MainActivity extends Activity {
         slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
         slider("Up / down", 0, 100, prefs.hudY(), prefs::setHudY);
         slider("Size", 30, 100, prefs.hudSize(), prefs::setHudSize);
+        slider("Mini map width", 40, 300, prefs.hudMapW(), prefs::setHudMapW);
+        slider("Mini map height", 40, 200, prefs.hudMapH(), prefs::setHudMapH);
         slider("Brightness", 20, 100, prefs.hudOpacity(), prefs::setHudOpacity);
         root.addView(button("Show a sample on the HUD for 20 seconds", v -> {
             if (!MapService.running) {

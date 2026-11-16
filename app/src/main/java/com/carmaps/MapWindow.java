@@ -58,6 +58,9 @@ final class MapWindow implements TileMap.Listener {
         void startNav();
 
         void stopNav();
+
+        /** The tolls button was tapped: the setting has already been changed. */
+        void tollsChanged();
     }
 
     private static final String TAG = "MapWindow";
@@ -80,7 +83,7 @@ final class MapWindow implements TileMap.Listener {
     private final TileMap map;
     private final ScrollView resultsScroll;
     private final LinearLayout results;
-    private final TextView recenter, trafficButton;
+    private final TextView recenter, trafficButton, tollButton;
 
     // The bar under the map.
     private final LinearLayout bar;
@@ -203,6 +206,13 @@ final class MapWindow implements TileMap.Listener {
         });
         trafficButton.setTextSize(20);
         side.addView(trafficButton);
+        // Tolls allowed or avoided; crossed out in red while they are being avoided.
+        tollButton = roundButton("$", v -> {
+            prefs.setAvoidTolls(!prefs.avoidTolls());
+            refresh();
+            host.tollsChanged();
+        });
+        side.addView(tollButton);
         side.addView(recenter);
         side.addView(roundButton("+", v -> map.zoomBy(1)));
         side.addView(roundButton("−", v -> map.zoomBy(-1)));
@@ -333,6 +343,10 @@ final class MapWindow implements TileMap.Listener {
         map.setTraffic(on ? key : null);
         trafficButton.setVisibility(key.isEmpty() ? View.GONE : View.VISIBLE);
         trafficButton.setAlpha(on ? 1f : 0.4f);
+        boolean avoid = prefs.avoidTolls();
+        tollButton.setTextColor(avoid ? 0xFFFF6B5E : 0xFFFFFFFF);
+        tollButton.setPaintFlags(avoid ? tollButton.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG
+                : tollButton.getPaintFlags() & ~Paint.STRIKE_THRU_TEXT_FLAG);
     }
 
     void destroy() {
