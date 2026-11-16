@@ -562,6 +562,7 @@ final class TileMap extends View {
             c.setReadTimeout(15000);
             code[0] = c.getResponseCode();
             if (code[0] != 200) return null;
+            Usage.add(Usage.TRAFFIC);
             try (InputStream in = c.getInputStream()) {
                 return BitmapFactory.decodeStream(in);
             }
@@ -696,6 +697,7 @@ final class TileMap extends View {
                 postInvalidate();
             } else if (tomtom && code == 200) {
                 mapStatus = "Map: TomTom";
+                Usage.add(Usage.MAP);
             }
             if (code == 200) {
                 File parent = file.getParentFile();

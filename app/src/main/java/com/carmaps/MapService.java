@@ -126,6 +126,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     public void onCreate() {
         super.onCreate();
         prefs = new Prefs(this);
+        Usage.init(this);
         Context windowContext = this;
         if (Build.VERSION.SDK_INT >= 30) {
             Display display = getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
@@ -177,6 +178,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     @Override
     public void onDestroy() {
         running = false;
+        Usage.flush();
         gpsStatus = "Not started";
         Hud.status = "Not started";
         main.removeCallbacksAndMessages(null);

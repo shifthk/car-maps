@@ -70,7 +70,9 @@ final class Router {
         if (from.hasBearing() && from.hasSpeed() && from.getSpeed() > 3f) {
             url.append("&vehicleHeading=").append(Math.round(from.getBearing()) % 360);
         }
-        JSONArray routes = new JSONObject(http("GET", url.toString(), null)).optJSONArray("routes");
+        String answer = http("GET", url.toString(), null);
+        Usage.add(Usage.ROUTE);
+        JSONArray routes = new JSONObject(answer).optJSONArray("routes");
         if (routes == null || routes.length() == 0) throw new IOException("No route found.");
         return routes.getJSONObject(0);
     }
@@ -84,7 +86,10 @@ final class Router {
             c.setConnectTimeout(10000);
             c.setReadTimeout(15000);
             int code = c.getResponseCode();
-            if (code == 200) return null;
+            if (code == 200) {
+                Usage.add(Usage.TRAFFIC);
+                return null;
+            }
             if (code == 401 || code == 403) return "TomTom didn't accept the key. Check it was typed exactly.";
             if (code == 429) return "The key works, but its free allowance is used up for now.";
             return "TomTom returned error " + code + ".";
@@ -169,7 +174,9 @@ final class Router {
         if (near != null) {
             url.append(String.format(Locale.US, "&lat=%.5f&lon=%.5f", near.getLatitude(), near.getLongitude()));
         }
-        JSONArray results = new JSONObject(http("GET", url.toString(), null)).optJSONArray("results");
+        String answer = http("GET", url.toString(), null);
+        Usage.add(Usage.SEARCH);
+        JSONArray results = new JSONObject(answer).optJSONArray("results");
         List<Dest> out = new ArrayList<>();
         if (results == null) return out;
         for (int i = 0; i < results.length(); i++) {

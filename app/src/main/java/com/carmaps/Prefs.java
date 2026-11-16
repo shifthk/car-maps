@@ -75,14 +75,6 @@ final class Prefs {
     boolean hudMap() { return p.getBoolean("hudMiniMap", true); }
     void setHudMap(boolean v) { p.edit().putBoolean("hudMiniMap", v).apply(); }
 
-    /** Blank the car's own HUD readouts while the directions are showing. */
-    boolean hudCover() { return p.getBoolean("hudCover", false); }
-    void setHudCover(boolean v) { p.edit().putBoolean("hudCover", v).apply(); }
-
-    /** Solid black behind the directions, so nothing the car shows there comes through. */
-    boolean hudSolid() { return p.getBoolean("hudSolid", true); }
-    void setHudSolid(boolean v) { p.edit().putBoolean("hudSolid", v).apply(); }
-
     /** Try the "display over other apps" kind of window on the HUD before the second-screen kind. */
     boolean hudOverlay() { return p.getBoolean("hudOverlay", false); }
     void setHudOverlay(boolean v) { p.edit().putBoolean("hudOverlay", v).apply(); }

@@ -258,8 +258,8 @@ final class Hud {
      * Two kinds of window can be put on the HUD's display. A Presentation (an ordinary second-screen
      * window) is what the apps known to work on this car use, so it is tried first; an overlay window
      * (the "display over other apps" kind) is the other, and the setting swaps the order. Either way
-     * the window itself is see-through: what hides the car's own HUD items is the solid black the
-     * panel paints behind the directions.
+     * the window is see-through apart from the arrow, text and route line; the gap in the middle
+     * keeps them clear of the car's own readouts.
      */
     private void show(Display display) {
         boolean overlayFirst = prefs.hudOverlay();
@@ -413,28 +413,7 @@ final class Hud {
             mapBox.addView(new Edges(c), new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             addView(mapBox);
-            setWillNotDraw(false);
-            backing.setColor(0xFF000000);
             applyPrefs();
-        }
-
-        private final Paint backing = new Paint();
-
-        /**
-         * Solid black behind the directions and the mini map. On a HUD black is unlit, so it looks like
-         * nothing, but being solid it hides whatever the car draws underneath in that area. Without
-         * it the window is see-through there and the car's own items show between the lines.
-         */
-        @Override
-        protected void onDraw(Canvas c) {
-            if (!prefs.hudSolid() || prefs.hudCover()) return;
-            if (!navigating && !testing) return;
-            int[] r = rects(getWidth(), getHeight());
-            int pad = Math.round(r[6] * 0.06f);
-            // Two separate patches, so the gap between them stays clear for the car's own readouts.
-            int inner = Math.min(pad, Math.max(0, (r[3] - r[0] - r[2]) / 2));
-            c.drawRect(r[0] - pad, r[1] - pad, r[0] + r[2] + inner, r[1] + r[6] + pad, backing);
-            if (r[5] > 0) c.drawRect(r[3] - inner, r[4] - pad, r[3] + r[5] + pad, r[4] + r[7] + pad, backing);
         }
 
         private boolean showMap() {
@@ -443,9 +422,6 @@ final class Hud {
 
         void applyPrefs() {
             applyAlpha();
-            // Black is "no light" on a HUD: a black background blanks the car's own readouts under the
-            // picture, a clear one leaves them showing around it.
-            setBackgroundColor(prefs.hudCover() ? 0xFF000000 : 0);
             mapBox.setVisibility(showMap() ? VISIBLE : INVISIBLE);
             requestLayout();
             invalidate();

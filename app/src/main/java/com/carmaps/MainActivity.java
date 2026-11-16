@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
     private Prefs prefs;
     private Updater updater;
     private LinearLayout root;
-    private TextView status;
+    private TextView status, usage;
     private Button startStop, overlayButton, locationButton, backgroundButton;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = new Prefs(this);
+        Usage.init(this);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFitsSystemWindows(true);
@@ -161,13 +162,18 @@ public class MainActivity extends Activity {
             }).start();
         }));
         toggle("Show traffic on the map", prefs.traffic(), prefs::setTraffic);
+        root.addView(note("TomTom requests this month, against the free monthly allowance:"));
+        usage = text("", 15, false);
+        usage.setTextColor(0xFFB6C0CA);
+        usage.setPadding(0, 0, 0, dp(4));
+        root.addView(usage);
+        root.addView(note("Counted by this app on this device, from the 1st of each month. TomTom's own "
+                + "dashboard is the final word."));
 
         // ---- HUD
         heading("Head-up display");
         toggle("Show directions on the HUD", prefs.hud(), prefs::setHud);
         toggle("Mini map of the route ahead", prefs.hudMap(), prefs::setHudMap);
-        toggle("Cover what the car shows behind the directions", prefs.hudSolid(), prefs::setHudSolid);
-        toggle("Blank the whole HUD while directions show", prefs.hudCover(), prefs::setHudCover);
         choice("Kind of window on the HUD (change it if the directions don't appear on top)",
                 new String[]{"Second-screen window (as Zeekr Shortcut uses)", "Display-over-apps window"},
                 prefs.hudOverlay() ? 1 : 0, i -> prefs.setHudOverlay(i == 1));
@@ -201,10 +207,8 @@ public class MainActivity extends Activity {
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
         root.addView(note("The directions sit to the left of the gap and the mini map to the right. Move the "
-                + "sliders while the sample is showing to place them. Black is unlit on a HUD, so "
-                + "the solid black behind the directions looks like nothing but hides whatever the car shows in "
-                + "that spot; the car's readouts elsewhere on the HUD stay. Blanking the whole HUD hides the "
-                + "car's speed readout too."));
+                + "sliders while the sample is showing to place them. Black is unlit on a HUD, so only the "
+                + "arrow, text and route line show."));
 
         // ---- updates
         heading("App");
@@ -253,6 +257,7 @@ public class MainActivity extends Activity {
         overlayButton.setVisibility(overlay ? View.GONE : View.VISIBLE);
         locationButton.setVisibility(location ? View.GONE : View.VISIBLE);
         backgroundButton.setVisibility(location && !background ? View.VISIBLE : View.GONE);
+        usage.setText(Usage.describe());
         startStop.setText(MapService.running ? "Stop the floating map" : "Start the floating map");
         status.setText("Floating map: " + (MapService.running ? "running" : "stopped")
                 + "\nGPS: " + MapService.gpsStatus
