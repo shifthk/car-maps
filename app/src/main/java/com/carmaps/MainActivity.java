@@ -197,6 +197,8 @@ public class MainActivity extends Activity {
 
         slider("Gap in the middle (for the car's speed readout)", 0, 70, prefs.hudGap(), prefs::setHudGap);
         slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
+        slider("Directions size", 30, 100, prefs.hudInfoSize(), prefs::setHudInfoSize);
+        slider("Directions up / down", 0, 100, prefs.hudInfoY(), prefs::setHudInfoY);
         slider("Mini map width", 30, 300, prefs.hudMapW(), prefs::setHudMapW);
         slider("Mini map height", 30, 100, prefs.hudMapH(), prefs::setHudMapH);
         toggle("Map of the roads around the car when not following a route", prefs.hudSurround(),

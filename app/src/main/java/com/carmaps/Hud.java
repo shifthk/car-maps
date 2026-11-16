@@ -530,28 +530,31 @@ final class Hud {
         }
 
         /**
-         * The directions take the full height of the HUD, to the left of a gap; the mini map is to the
-         * right of the gap. The map's place is kept even when the map is off, so the gap stays where
+         * The directions sit to the left of a gap, at the height and position the settings give (the
+         * HUD's picture can be cropped by its optics, so they may need to be smaller than the display);
+         * the mini map is to the right of the gap. The map's place is kept even when the map is off, so the gap stays where
          * it was put. The mini map's width and height are set separately, each as a percentage of the
          * HUD's height, and it is centred top to bottom.
          *
          * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
         private int[] rects(int w, int h) {
-            int infoW = Math.round(h * 2.6f);
+            int infoH = Math.max(48, Math.min(h, Math.round(h * prefs.hudInfoSize() / 100f)));
+            int infoTop = Math.round((h - infoH) * prefs.hudInfoY() / 100f);
+            int infoW = Math.round(infoH * 2.6f);
             int mapW = Math.max(24, Math.min(w / 2, Math.round(h * prefs.hudMapW() / 100f)));
             int mapH = Math.max(24, Math.min(h, Math.round(h * prefs.hudMapH() / 100f)));
             int smallest = Math.round(h * 0.08f);
             int gap = Math.max(smallest, Math.round(w * prefs.hudGap() / 100f));
             if (infoW + gap + mapW > w) {
                 // Too wide for the HUD: the directions narrow first, then the gap gives way.
-                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(h * 0.8f)));
+                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(infoH * 0.8f)));
                 infoW = Math.max(0, w - mapW - gap);
             }
             int total = infoW + gap + mapW;
             int left = Math.round(Math.max(0, w - total) * prefs.hudX() / 100f);
             int mapTop = Math.max(0, (h - mapH) / 2);
-            return new int[]{left, 0, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, h, mapH};
+            return new int[]{left, infoTop, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, infoH, mapH};
         }
     }
 

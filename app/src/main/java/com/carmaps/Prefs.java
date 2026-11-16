@@ -161,6 +161,13 @@ final class Prefs {
     int hudMapH() { return p.getInt("hudMapH", 100); }
     void setHudMapH(int v) { p.edit().putInt("hudMapH", v).apply(); }
 
+    /** Height of the directions as a percentage of the HUD's height, and where they sit (0 top, 100 bottom). */
+    int hudInfoSize() { return p.getInt("hudInfoSize", 70); }
+    void setHudInfoSize(int v) { p.edit().putInt("hudInfoSize", v).apply(); }
+
+    int hudInfoY() { return p.getInt("hudInfoY", 50); }
+    void setHudInfoY(int v) { p.edit().putInt("hudInfoY", v).apply(); }
+
     /** A map of the roads around the car on the HUD while no route is being followed. */
     boolean hudSurround() { return p.getBoolean("hudSurround", true); }
     void setHudSurround(boolean v) { p.edit().putBoolean("hudSurround", v).apply(); }
