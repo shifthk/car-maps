@@ -165,6 +165,10 @@ final class Prefs {
     int hudInfoSize() { return p.getInt("hudInfoSize", 70); }
     void setHudInfoSize(int v) { p.edit().putInt("hudInfoSize", v).apply(); }
 
+    /** Size of the arrows and text inside the directions, as a percentage of their normal size. */
+    int hudText() { return p.getInt("hudText", 100); }
+    void setHudText(int v) { p.edit().putInt("hudText", v).apply(); }
+
     int hudInfoY() { return p.getInt("hudInfoY", 50); }
     void setHudInfoY(int v) { p.edit().putInt("hudInfoY", v).apply(); }
 

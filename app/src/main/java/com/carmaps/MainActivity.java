@@ -199,6 +199,7 @@ public class MainActivity extends Activity {
         slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
         slider("Directions size", 30, 100, prefs.hudInfoSize(), prefs::setHudInfoSize);
         slider("Directions up / down", 0, 100, prefs.hudInfoY(), prefs::setHudInfoY);
+        slider("Arrow and text size in the directions", 50, 150, prefs.hudText(), prefs::setHudText);
         slider("Mini map width", 30, 300, prefs.hudMapW(), prefs::setHudMapW);
         slider("Mini map height", 30, 100, prefs.hudMapH(), prefs::setHudMapH);
         toggle("Map of the roads around the car when not following a route", prefs.hudSurround(),
