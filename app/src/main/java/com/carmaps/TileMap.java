@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.8 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.9 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -130,8 +130,9 @@ final class TileMap extends View {
     private Listener listener;
     private boolean dark;
     /**
-     * Drawn for the head-up display: OpenStreetMap's tiles reduced to their roads (bright on a
-     * see-through background, since black is unlit on a HUD), no TomTom, no traffic, no car marker.
+     * Drawn for the head-up display: map tiles reduced to their roads (bright on a see-through
+     * background, since black is unlit on a HUD), with no traffic layer and no car marker. TomTom's
+     * night map is used while a key is set, OpenStreetMap's otherwise.
      */
     private boolean hudStyle;
     /** Where the car sits top to bottom while the map is turned, as a fraction of the height. */
@@ -499,10 +500,10 @@ final class TileMap extends View {
     protected void onDraw(Canvas c) {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0) return;
-        boolean tomtom = !hudStyle && mapKey != null && SystemClock.elapsedRealtime() >= mapBlockedUntil;
+        boolean tomtom = mapKey != null && SystemClock.elapsedRealtime() >= mapBlockedUntil;
         if (!hudStyle) c.drawColor(dark ? 0xFF1B1F24 : 0xFFE8E6E1);
         // TomTom has a night map of its own; OpenStreetMap's tiles are recoloured instead.
-        prefix = hudStyle ? "h/" : tomtom ? (dark ? "n/" : "m/") : "";
+        prefix = hudStyle ? (tomtom ? "hn/" : "h/") : tomtom ? (dark ? "n/" : "m/") : "";
         tilePaint.setColorFilter(dark && !tomtom && !hudStyle ? darkFilter : null);
 
         // Glide the car from its last position and heading to the new ones over the second between GPS fixes.
@@ -576,7 +577,7 @@ final class TileMap extends View {
             paint.setTextSize(10 * density);
             paint.setTextAlign(Paint.Align.RIGHT);
             paint.setColor(0x80FFFFFF);
-            c.drawText("© OpenStreetMap", w - 4 * density, h - 4 * density, paint);
+            c.drawText(tomtom ? "© TomTom" : "© OpenStreetMap", w - 4 * density, h - 4 * density, paint);
             paint.setTextAlign(Paint.Align.LEFT);
             if (gliding) postInvalidateOnAnimation();
             return;
@@ -811,10 +812,15 @@ final class TileMap extends View {
 
     /** From disk if we have it and it's fresh, otherwise from the server (keeping a stale copy as a fallback). */
     private static boolean isTomTom(String key) {
-        return key.startsWith("m/") || key.startsWith("n/");
+        return key.startsWith("m/") || key.startsWith("n/") || key.startsWith("hn/");
     }
 
     private Bitmap load(String key) {
+        if (key.startsWith("hn/")) {
+            // The HUD's version of a TomTom night tile.
+            Bitmap b = load(key.substring(1));
+            return b == null ? null : nightRoadsOnly(b);
+        }
         if (key.startsWith("h/")) {
             // The HUD's version of an OpenStreetMap tile: the same file on disk, recoloured once here.
             Bitmap b = load(key.substring(2));
@@ -891,6 +897,30 @@ final class TileMap extends View {
             if (r >= 248 && g >= 248 && b >= 248) px[i] = 0xFF96CDEB;
             else if (r >= 225 && r - b >= 40 && b < 200 && g >= 120) px[i] = 0xFFFFC450;
             else px[i] = 0;
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+    }
+
+    /**
+     * Keeps only the roads (and labels) of a TomTom night tile, for the HUD. The night map draws
+     * them lighter than its dark blue-grey ground: main roads tan, which become amber, and the rest
+     * grey, which become pale blue. Water, parks, buildings and the ground become see-through, and
+     * the edges of lines fade so they stay smooth. Checked against TomTom's sample night tiles.
+     */
+    private static Bitmap nightRoadsOnly(Bitmap tile) {
+        int w = tile.getWidth(), h = tile.getHeight();
+        int[] px = new int[w * h];
+        tile.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+            int lum = (r * 3 + g * 6 + b) / 10;
+            if (lum < 66 || b - r >= 25) {
+                px[i] = 0;
+                continue;
+            }
+            int alpha = Math.min(255, (lum - 62) * 6);
+            px[i] = (alpha << 24) | (r - b >= 30 ? 0xFFC450 : 0x96CDEB);
         }
         return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
     }

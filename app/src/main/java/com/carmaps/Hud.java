@@ -462,6 +462,7 @@ final class Hud {
 
         void applyPrefs() {
             applyAlpha();
+            applyMapSource();
             boolean whole = surround();
             around.setVisibility(whole ? VISIBLE : GONE);
             info.setVisibility(whole ? GONE : VISIBLE);
@@ -483,6 +484,12 @@ final class Hud {
 
         void onCar() {
             if (haveCar) around.setCar(carLat, carLng, carBearing);
+        }
+
+        /** TomTom's map with a key (its traffic layer is never asked for here), OpenStreetMap's without. */
+        private void applyMapSource() {
+            String key = prefs.tomtomKey();
+            around.setMap(key.isEmpty() ? null : key);
         }
 
         @Override
