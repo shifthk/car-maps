@@ -222,8 +222,10 @@ public class MainActivity extends Activity {
             layout.reload();
             changed();
         }));
-        toggle("Map of the roads around the car when not following a route", prefs.hudSurround(),
-                prefs::setHudSurround);
+        choice("When not following a route, the HUD shows",
+                new String[]{"Nothing", "Map of the roads around the car", "Now playing on Spotify (in the "
+                        + "Directions box)", "Time and date (in the Directions box)"},
+                prefs.hudIdle(), prefs::setHudIdle);
         slider("Empty circle in the middle of that map (for the car's speed readout)", 0, 100,
                 prefs.hudHole(), prefs::setHudHole);
         slider("Brightness", 20, 100, prefs.hudOpacity(), prefs::setHudOpacity);
@@ -235,6 +237,53 @@ public class MainActivity extends Activity {
             MapService.send(this, MapService.ACTION_HUD_TEST);
         }));
         root.addView(note("Black is unlit on a HUD, so only the arrow, text and route line show."));
+
+        // ---- Spotify
+        heading("Spotify (now playing on the HUD)");
+        root.addView(note("Shows what's playing on your Spotify account, on any device, when the HUD is set to "
+                + "Now playing. Spotify needs an app of your own: at developer.spotify.com/dashboard, create an "
+                + "app (choose Web API), add the redirect URI " + Spotify.REDIRECT + ", and copy its Client ID "
+                + "here. Since February 2026 Spotify requires the app's owner to have Premium; if you sign in "
+                + "with a different account, add it under the app's User Management."));
+        EditText spotifyBox = new EditText(this);
+        spotifyBox.setHint("Spotify Client ID");
+        spotifyBox.setSingleLine(true);
+        spotifyBox.setTextSize(17);
+        spotifyBox.setTextColor(0xFFF2F4F6);
+        spotifyBox.setHintTextColor(0xFF9AA4AE);
+        spotifyBox.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        spotifyBox.setText(prefs.spotifyClientId());
+        spotifyBox.setMinHeight(dp(56));
+        root.addView(spotifyBox);
+        root.addView(button("Save the Client ID and sign in to Spotify", v -> {
+            String id = spotifyBox.getText().toString().trim();
+            if (!id.equals(prefs.spotifyClientId())) prefs.signOutSpotify();
+            prefs.setSpotifyClientId(id);
+            if (id.isEmpty()) {
+                toast("Client ID removed");
+                changed();
+                return;
+            }
+            startActivity(new Intent(this, SpotifyLoginActivity.class));
+        }));
+        root.addView(button("Sign in using the browser instead", v -> {
+            String id = spotifyBox.getText().toString().trim();
+            if (!id.equals(prefs.spotifyClientId())) prefs.signOutSpotify();
+            prefs.setSpotifyClientId(id);
+            if (id.isEmpty()) {
+                toast("Type the Client ID first");
+                return;
+            }
+            startActivity(new Intent(this, SpotifyLoginActivity.class)
+                    .putExtra(SpotifyLoginActivity.EXTRA_BROWSER, true));
+        }));
+        root.addView(button("Sign out of Spotify", v -> {
+            prefs.signOutSpotify();
+            Spotify.status = "Signed out";
+            toast("Signed out of Spotify");
+            changed();
+        }));
 
         // ---- updates
         heading("App");
@@ -290,6 +339,8 @@ public class MainActivity extends Activity {
                 + "\nGPS: " + MapService.gpsStatus
                 + "\nTomTom: " + trafficStatus()
                 + "\nHUD: " + Hud.status
+                + "\nSpotify: " + (Spotify.status.isEmpty()
+                        ? (Spotify.signedIn(prefs) ? "signed in" : "not set up") : Spotify.status)
                 + "\n" + Hud.describeDisplays(this));
     }
 

@@ -75,6 +75,52 @@ final class Hud {
     /** Why the HUD isn't showing, for the settings screen. */
     static volatile String status = "Not started";
 
+    /** What Spotify says is playing, for the now playing card; read every few seconds while it shows. */
+    private Spotify.Track track;
+    private android.graphics.Bitmap art;
+    private String artFor;
+    private java.util.concurrent.ExecutorService net;
+    private boolean polling;
+    private static final long POLL_MS = 5000;
+    private final Runnable poll = new Runnable() {
+        @Override
+        public void run() {
+            if (!polling) return;
+            final java.util.concurrent.ExecutorService pool = net;
+            if (pool == null) return;
+            pool.execute(() -> {
+                Spotify.Track t = Spotify.nowPlaying(prefs);
+                android.graphics.Bitmap pic = null;
+                String want = t == null ? null : t.artUrl;
+                boolean newArt = want != null && !want.equals(artFor);
+                if (newArt) pic = Spotify.art(want);
+                final android.graphics.Bitmap gotArt = pic;
+                main.post(() -> {
+                    track = t;
+                    if (want == null) {
+                        art = null;
+                        artFor = null;
+                    } else if (newArt) {
+                        art = gotArt;
+                        artFor = gotArt != null ? want : null;
+                    }
+                    if (panel != null) panel.onIdle();
+                });
+            });
+            main.postDelayed(this, POLL_MS);
+        }
+    };
+    /** Moves the progress bar and the clock on between reads. */
+    private final Runnable tick = new Runnable() {
+        @Override
+        public void run() {
+            if (panel != null && idleCard()) {
+                panel.onIdle();
+                main.postDelayed(this, 1000);
+            }
+        }
+    };
+
     private final Runnable evaluate = this::evaluate;
     private final Runnable endTest = () -> {
         testing = false;
@@ -219,6 +265,9 @@ final class Hud {
     }
 
     void release() {
+        polling = false;
+        if (net != null) net.shutdownNow();
+        net = null;
         main.removeCallbacksAndMessages(null);
         dm.unregisterDisplayListener(displayListener);
         dismiss();
@@ -230,12 +279,30 @@ final class Hud {
     }
 
     private boolean wanted() {
-        return testing || (prefs.hud() && (navigating || surround()));
+        return testing || (prefs.hud() && (navigating || surround() || idleCard()));
     }
 
     /** The map around the car, which takes the whole HUD while no route is being followed. */
     private boolean surround() {
-        return !navigating && !testing && haveCar && prefs.hudSurround();
+        return !navigating && !testing && haveCar && prefs.hudIdle() == Prefs.IDLE_MAP;
+    }
+
+    /** The now playing card or the clock, in the directions' box while no route is being followed. */
+    private boolean idleCard() {
+        int idle = prefs.hudIdle();
+        return !navigating && !testing && (idle == Prefs.IDLE_MUSIC || idle == Prefs.IDLE_CLOCK);
+    }
+
+    /** Asks Spotify what's playing only while the card is up. */
+    private void updatePolling() {
+        boolean want = showing() && idleCard() && prefs.hudIdle() == Prefs.IDLE_MUSIC;
+        if (want == polling) return;
+        polling = want;
+        main.removeCallbacks(poll);
+        if (want) {
+            if (net == null) net = java.util.concurrent.Executors.newSingleThreadExecutor();
+            main.post(poll);
+        }
     }
 
     private boolean showing() {
@@ -249,10 +316,17 @@ final class Hud {
     }
 
     private void evaluate() {
+        evaluateWindow();
+        updatePolling();
+        main.removeCallbacks(tick);
+        if (showing() && idleCard()) main.post(tick);
+    }
+
+    private void evaluateWindow() {
         main.removeCallbacks(evaluate);
         if (!wanted()) {
             dismiss();
-            status = !prefs.hud() ? "Off" : prefs.hudSurround() ? "Waiting for the car's position"
+            status = !prefs.hud() ? "Off" : prefs.hudIdle() == Prefs.IDLE_MAP ? "Waiting for the car's position"
                     : "Ready (shows while guiding)";
             return;
         }
@@ -425,6 +499,7 @@ final class Hud {
      */
     private final class Panel extends ViewGroup {
         private final InfoView info;
+        private final IdleView idle;
         private final FrameLayout mapBox;
         private final LineView line;
         private final TileMap around;
@@ -441,6 +516,8 @@ final class Hud {
             addView(around);
             info = new InfoView(c);
             addView(info);
+            idle = new IdleView(c);
+            addView(idle);
             mapBox = new FrameLayout(c);
             line = new LineView(c);
             mapBox.addView(line, new FrameLayout.LayoutParams(
@@ -463,19 +540,26 @@ final class Hud {
         void applyPrefs() {
             applyAlpha();
             applyMapSource();
-            boolean whole = surround();
+            boolean whole = surround(), card = idleCard();
             around.setVisibility(whole ? VISIBLE : GONE);
-            info.setVisibility(whole ? GONE : VISIBLE);
-            mapBox.setVisibility(!whole && showMap() ? VISIBLE : INVISIBLE);
+            idle.setVisibility(card ? VISIBLE : GONE);
+            info.setVisibility(whole || card ? GONE : VISIBLE);
+            mapBox.setVisibility(!whole && !card && showMap() ? VISIBLE : INVISIBLE);
+            idle.invalidate();
             requestLayout();
             invalidate();
             info.invalidate();
             line.invalidate();
         }
 
+        void onIdle() {
+            idle.invalidate();
+        }
+
         void onNav() {
-            if ((mapBox.getVisibility() == VISIBLE) != (!surround() && showMap())
-                    || (around.getVisibility() == VISIBLE) != surround()) {
+            if ((mapBox.getVisibility() == VISIBLE) != (!surround() && !idleCard() && showMap())
+                    || (around.getVisibility() == VISIBLE) != surround()
+                    || (idle.getVisibility() == VISIBLE) != idleCard()) {
                 applyPrefs();
             }
             info.invalidate();
@@ -501,6 +585,8 @@ final class Hud {
                     MeasureSpec.makeMeasureSpec(Math.max(1, h), MeasureSpec.EXACTLY));
             info.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
+            idle.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
             mapBox.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[5]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[7]), MeasureSpec.EXACTLY));
         }
@@ -510,6 +596,7 @@ final class Hud {
             int[] p = rects(r - l, b - t);
             around.layout(0, 0, r - l, b - t);
             info.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
+            idle.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
             mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + Math.max(1, p[7]));
         }
 
@@ -637,6 +724,79 @@ final class Hud {
             } else {
                 fit(foot, f, w >= h * 2f ? h * 0.16f : h * 0.12f, w - pad * 2);
                 c.drawText(f, pad, h - pad - foot.descent(), foot);
+            }
+        }
+    }
+
+    /**
+     * What shows in the directions' box while no route is being followed: what's playing on Spotify
+     * (album picture, title, artist and a progress bar) or the time and date. Sized to fit the box.
+     */
+    private final class IdleView extends View {
+        private final TextPaint title = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint sub = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pic = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final android.graphics.RectF dst = new android.graphics.RectF();
+        private final java.text.DateFormat time = android.text.format.DateFormat.getTimeFormat(getContext());
+        private final java.text.SimpleDateFormat date = new java.text.SimpleDateFormat("EEEE d MMMM", Locale.getDefault());
+
+        IdleView(Context c) {
+            super(c);
+            title.setColor(0xFFFFFFFF);
+            title.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            sub.setColor(0xFFB8C4CE);
+        }
+
+        private void fit(TextPaint p, String text, float size, float width) {
+            p.setTextSize(size);
+            float tw = p.measureText(text);
+            if (tw > width && tw > 0) p.setTextSize(Math.max(8, size * width / tw));
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float w = getWidth(), h = getHeight();
+            float pad = Math.min(w, h) * 0.05f;
+            if (prefs.hudIdle() == Prefs.IDLE_CLOCK) {
+                java.util.Date now = new java.util.Date();
+                String t = time.format(now), d = date.format(now);
+                fit(title, t, h * 0.5f, w - pad * 2);
+                float y = h * 0.5f - (title.ascent() + title.descent()) / 2f - h * 0.08f;
+                c.drawText(t, pad, y, title);
+                fit(sub, d, h * 0.16f, w - pad * 2);
+                c.drawText(d, pad, y + title.descent() - sub.ascent(), sub);
+                return;
+            }
+            Spotify.Track t = track;
+            if (t == null) return;   // nothing playing: leave the HUD dark
+            // The album picture on the left, as tall as the box, when there's room for text beside it.
+            float textLeft = pad;
+            android.graphics.Bitmap a = art;
+            if (a != null && w > h * 1.6f) {
+                dst.set(0, 0, h, h);
+                pic.setAlpha(t.playing ? 255 : 140);
+                c.drawBitmap(a, null, dst, pic);
+                textLeft = h + pad * 2;
+            }
+            float tw = Math.max(10, w - textLeft - pad);
+            title.setTextSize(h * 0.22f);
+            c.drawText(TextUtils.ellipsize(t.title, title, tw, TextUtils.TruncateAt.END).toString(),
+                    textLeft, h * 0.3f, title);
+            sub.setTextSize(h * 0.16f);
+            c.drawText(TextUtils.ellipsize(t.artist, sub, tw, TextUtils.TruncateAt.END).toString(),
+                    textLeft, h * 0.55f, sub);
+            // Progress: moved on since the last read while playing.
+            long at = t.progressMs + (t.playing ? android.os.SystemClock.elapsedRealtime() - t.readAt : 0);
+            float f = t.durationMs > 0 ? Math.max(0, Math.min(1, at / (float) t.durationMs)) : 0;
+            float y = h * 0.8f, th = Math.max(3, h * 0.04f);
+            bar.setColor(0xFF3A444E);
+            c.drawRect(textLeft, y, textLeft + tw, y + th, bar);
+            bar.setColor(t.playing ? 0xFF1ED760 : 0xFF8A949E);
+            c.drawRect(textLeft, y, textLeft + tw * f, y + th, bar);
+            if (!t.playing) {
+                sub.setTextSize(h * 0.12f);
+                c.drawText("Paused", textLeft, y - th - h * 0.04f, sub);
             }
         }
     }

@@ -38,6 +38,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SpotifyLoginActivity"
+            android:exported="false" />
+
         <service
             android:name=".MapService"
             android:exported="false"

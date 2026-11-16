@@ -206,9 +206,34 @@ final class Prefs {
                 {(left + infoW + gap) * 1000 / w, mapTop * 1000 / h, mapW * 1000 / w, mapH * 1000 / h}};
     }
 
-    /** A map of the roads around the car on the HUD while no route is being followed. */
-    boolean hudSurround() { return p.getBoolean("hudSurround", true); }
-    void setHudSurround(boolean v) { p.edit().putBoolean("hudSurround", v).apply(); }
+    /** What the HUD shows while no route is being followed. */
+    static final int IDLE_NOTHING = 0, IDLE_MAP = 1, IDLE_MUSIC = 2, IDLE_CLOCK = 3;
+
+    /** Until 2.12 there was only an on/off switch for the map. */
+    int hudIdle() { return p.getInt("hudIdle", p.getBoolean("hudSurround", true) ? IDLE_MAP : IDLE_NOTHING); }
+    void setHudIdle(int v) { p.edit().putInt("hudIdle", v).apply(); }
+
+    // ---- Spotify (the user's own app registration and the tokens from signing in; never a password)
+
+    String spotifyClientId() { return p.getString("spotifyClientId", ""); }
+    void setSpotifyClientId(String v) { p.edit().putString("spotifyClientId", v == null ? "" : v.trim()).apply(); }
+
+    String spotifyVerifier() { return p.getString("spotifyVerifier", ""); }
+    void setSpotifyVerifier(String v) { p.edit().putString("spotifyVerifier", v).apply(); }
+
+    String spotifyAccess() { return p.getString("spotifyAccess", ""); }
+    String spotifyRefresh() { return p.getString("spotifyRefresh", ""); }
+    long spotifyExpiry() { return p.getLong("spotifyExpiry", 0); }
+
+    void setSpotifyTokens(String access, String refresh, long expiry) {
+        p.edit().putString("spotifyAccess", access).putString("spotifyRefresh", refresh)
+                .putLong("spotifyExpiry", expiry).apply();
+    }
+
+    void signOutSpotify() {
+        p.edit().remove("spotifyAccess").remove("spotifyRefresh").remove("spotifyExpiry")
+                .remove("spotifyVerifier").apply();
+    }
 
     /** Diameter of the empty circle in the middle of that map, as a percentage of the HUD's height. */
     int hudHole() { return p.getInt("hudHole", 70); }
