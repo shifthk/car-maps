@@ -34,8 +34,7 @@ import java.util.Locale;
  * <p>The Zeekr 7X exposes its HUD to Android as a secondary display (1440 x 480; id 3 on the cars
  * checked). The picture goes in an overlay window on that display, which sits above everything else
  * shown there. The HUD is a projection, so black means "no light": everything here is bright shapes
- * on black, and unless told to blank the whole HUD, the parts this panel doesn't cover are left
- * see-through.</p>
+ * on black, and everything else is left see-through.</p>
  *
  * <p>How to find the display and put a window on it was learned from zeekr-shortcut-car (dts88) and
  * CAMCORDER (FerixzTanz), who worked it out on their own cars. No code is copied from either.</p>
@@ -64,6 +63,10 @@ final class Hud {
     private boolean navigating;
     private boolean testing;
     private double bearing;
+    /** The car's last position, for the map around it shown while no route is being followed. */
+    private boolean haveCar;
+    private double carLat, carLng;
+    private float carBearing;
     private Nav.Route route;
     private Nav.Progress progress;
     private String dist = "", text = "", footer = "";
@@ -163,6 +166,17 @@ final class Hud {
         this.bearing = bearing;
     }
 
+    /** Where the car is, for the map around it shown while no route is being followed. */
+    void setCar(double lat, double lng, float bearing) {
+        boolean first = !haveCar;
+        haveCar = true;
+        carLat = lat;
+        carLng = lng;
+        carBearing = bearing;
+        if (panel != null) panel.onCar();
+        if (first) evaluate();
+    }
+
     /** The route being followed (or previewed); null when there is none. */
     void setRoute(Nav.Route route) {
         this.route = route;
@@ -216,7 +230,12 @@ final class Hud {
     }
 
     private boolean wanted() {
-        return testing || (prefs.hud() && navigating);
+        return testing || (prefs.hud() && (navigating || surround()));
+    }
+
+    /** The map around the car, which takes the whole HUD while no route is being followed. */
+    private boolean surround() {
+        return !navigating && !testing && haveCar && prefs.hudSurround();
     }
 
     private boolean showing() {
@@ -233,7 +252,8 @@ final class Hud {
         main.removeCallbacks(evaluate);
         if (!wanted()) {
             dismiss();
-            status = prefs.hud() ? "Ready (shows while guiding)" : "Off";
+            status = !prefs.hud() ? "Off" : prefs.hudSurround() ? "Waiting for the car's position"
+                    : "Ready (shows while guiding)";
             return;
         }
         Display display = find(dm, prefs.hudDisplay());
@@ -351,6 +371,7 @@ final class Hud {
         WindowManager wm = overlayWm;
         presentation = null;
         panel = null;
+        if (v != null) v.release();
         overlayWm = null;
         overlayLp = null;
         shownOn = -1;
@@ -396,14 +417,28 @@ final class Hud {
 
     // ------------------------------------------------------------------ the picture
 
-    /** Fills the HUD (transparent) and places the directions and the mini map inside it. */
+    /**
+     * Fills the HUD (transparent). While following a route: the directions on the left, the mini
+     * map on the right, and an empty gap between them. Otherwise: a map of the roads around the car
+     * across the whole HUD, with an empty circle in the middle. The gap and the circle are left clear
+     * for what the car itself shows in the middle of the HUD (its speed readout).
+     */
     private final class Panel extends ViewGroup {
         private final InfoView info;
         private final FrameLayout mapBox;
         private final LineView line;
+        private final TileMap around;
+        private final Path hole = new Path();
 
         Panel(Context c) {
             super(c);
+            around = new TileMap(c);
+            around.setHudStyle(true);
+            around.setHeadingUp(true);
+            around.setTurnedAnchor(0.5f);
+            around.setFollow(true);
+            around.setZoom(16);
+            addView(around);
             info = new InfoView(c);
             addView(info);
             mapBox = new FrameLayout(c);
@@ -413,7 +448,12 @@ final class Hud {
             mapBox.addView(new Edges(c), new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             addView(mapBox);
+            onCar();
             applyPrefs();
+        }
+
+        void release() {
+            around.release();
         }
 
         private boolean showMap() {
@@ -422,7 +462,10 @@ final class Hud {
 
         void applyPrefs() {
             applyAlpha();
-            mapBox.setVisibility(showMap() ? VISIBLE : INVISIBLE);
+            boolean whole = surround();
+            around.setVisibility(whole ? VISIBLE : GONE);
+            info.setVisibility(whole ? GONE : VISIBLE);
+            mapBox.setVisibility(!whole && showMap() ? VISIBLE : INVISIBLE);
             requestLayout();
             invalidate();
             info.invalidate();
@@ -430,9 +473,16 @@ final class Hud {
         }
 
         void onNav() {
-            if ((mapBox.getVisibility() == VISIBLE) != showMap()) applyPrefs();
+            if ((mapBox.getVisibility() == VISIBLE) != (!surround() && showMap())
+                    || (around.getVisibility() == VISIBLE) != surround()) {
+                applyPrefs();
+            }
             info.invalidate();
             line.invalidate();
+        }
+
+        void onCar() {
+            if (haveCar) around.setCar(carLat, carLng, carBearing);
         }
 
         @Override
@@ -440,6 +490,8 @@ final class Hud {
             int w = MeasureSpec.getSize(widthSpec), h = MeasureSpec.getSize(heightSpec);
             setMeasuredDimension(w, h);
             int[] r = rects(w, h);
+            around.measure(MeasureSpec.makeMeasureSpec(Math.max(1, w), MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(Math.max(1, h), MeasureSpec.EXACTLY));
             info.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
             mapBox.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[5]), MeasureSpec.EXACTLY),
@@ -449,50 +501,65 @@ final class Hud {
         @Override
         protected void onLayout(boolean changed, int l, int t, int r, int b) {
             int[] p = rects(r - l, b - t);
+            around.layout(0, 0, r - l, b - t);
             info.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
             mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + Math.max(1, p[7]));
         }
 
+        /** Leaves the circle in the middle of the map around the car undrawn, so nothing there lights up. */
+        @Override
+        protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
+            if (child != around) return super.drawChild(canvas, child, drawingTime);
+            float radius = getHeight() * prefs.hudHole() / 200f;
+            if (radius <= 0) return super.drawChild(canvas, child, drawingTime);
+            hole.rewind();
+            hole.addCircle(getWidth() / 2f, getHeight() / 2f, radius, Path.Direction.CW);
+            int save = canvas.save();
+            if (Build.VERSION.SDK_INT >= 26) canvas.clipOutPath(hole);
+            else canvas.clipPath(hole, android.graphics.Region.Op.DIFFERENCE);
+            boolean more = super.drawChild(canvas, child, drawingTime);
+            canvas.restoreToCount(save);
+            return more;
+        }
+
         /**
-         * The directions sit to the left of a gap and the mini map to the right of it; the gap is left
-         * empty for what the car itself shows in the middle of the HUD (its speed readout). The map's
-         * place is kept even when the map is off, so the gap stays where it was put.
-         *
-         * The mini map's width and height are set separately, each as a percentage of the directions'
-         * height; it is centred top to bottom on the directions.
+         * The directions take the full height of the HUD, to the left of a gap; the mini map is to the
+         * right of the gap. The map's place is kept even when the map is off, so the gap stays where
+         * it was put. The mini map's width and height are set separately, each as a percentage of the
+         * HUD's height, and it is centred top to bottom.
          *
          * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
         private int[] rects(int w, int h) {
-            int height = Math.max(48, Math.min(h, Math.round(h * prefs.hudSize() / 100f)));
-            int infoW = Math.round(height * 2.6f);
-            int mapW = Math.max(24, Math.min(w / 2, Math.round(height * prefs.hudMapW() / 100f)));
-            int mapH = Math.max(24, Math.min(h, Math.round(height * prefs.hudMapH() / 100f)));
-            int smallest = Math.round(height * 0.08f);
+            int infoW = Math.round(h * 2.6f);
+            int mapW = Math.max(24, Math.min(w / 2, Math.round(h * prefs.hudMapW() / 100f)));
+            int mapH = Math.max(24, Math.min(h, Math.round(h * prefs.hudMapH() / 100f)));
+            int smallest = Math.round(h * 0.08f);
             int gap = Math.max(smallest, Math.round(w * prefs.hudGap() / 100f));
             if (infoW + gap + mapW > w) {
                 // Too wide for the HUD: the directions narrow first, then the gap gives way.
-                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(height * 1.3f)));
+                gap = Math.max(smallest, Math.min(gap, w - mapW - Math.round(h * 0.8f)));
                 infoW = Math.max(0, w - mapW - gap);
             }
             int total = infoW + gap + mapW;
             int left = Math.round(Math.max(0, w - total) * prefs.hudX() / 100f);
-            int top = Math.round(Math.max(0, h - height) * prefs.hudY() / 100f);
-            int mapTop = Math.max(0, Math.min(h - mapH, top + (height - mapH) / 2));
-            return new int[]{left, top, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, height, mapH};
+            int mapTop = Math.max(0, (h - mapH) / 2);
+            return new int[]{left, 0, infoW, left + infoW + gap, mapTop, showMap() ? mapW : 0, h, mapH};
         }
     }
 
-    /** The next turn: arrow, distance, what to do, and the arrival line. */
+    /**
+     * The next turn: arrow, distance, what to do, and the arrival line (or the lanes to be in). In a
+     * wide space the arrow sits beside the text; in a narrower one, the arrow and distance share the
+     * top and the instruction wraps onto two lines below them.
+     */
     private final class InfoView extends View {
         private final Paint shape = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint big = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint small = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint foot = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        /** Lanes not to take, the speed limit's ring, and its number. */
+        /** Lanes not to take. */
         private final Paint dim = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint number = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         InfoView(Context c) {
             super(c);
@@ -502,12 +569,20 @@ final class Hud {
             small.setColor(0xFFFFFFFF);
             foot.setColor(0xFF5CFF9D);
             foot.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            dim.setColor(0xFF56606A);
+        }
+
+        /** Sets the paint's size to the largest up to {@code size} at which the text fits in {@code width}. */
+        private void fit(TextPaint p, String text, float size, float width) {
+            p.setTextSize(size);
+            float tw = p.measureText(text);
+            if (tw > width && tw > 0) p.setTextSize(Math.max(8, size * width / tw));
         }
 
         @Override
         protected void onDraw(Canvas c) {
             float h = getHeight(), w = getWidth();
-            if (w < h * 0.5f) return;
+            if (w < h * 0.3f) return;
             Maneuvers.Icon ic = icon;
             String d = dist, t = text, f = footer;
             if (!navigating && !testing) return;
@@ -517,46 +592,53 @@ final class Hud {
                 t = "Turn left onto Example Road";
                 f = "14:32  ·  25 min  ·  12 km";
             }
-            float iconSize = h * 0.64f;
-            float textLeft = h * 0.06f;
-            if (ic != null) {
-                Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
-                textLeft += iconSize;
-            }
-            big.setTextSize(h * 0.32f);
-            c.drawText(d, textLeft, h * 0.36f, big);
-            small.setTextSize(h * 0.15f);
-            c.drawText(TextUtils.ellipsize(t, small, Math.max(10, w - textLeft), TextUtils.TruncateAt.END).toString(),
-                    textLeft, h * 0.58f, small);
             Nav.Progress p = progress;
             boolean live = navigating && p != null && !p.offRoute;
             Nav.LaneSpot spot = live ? p.lanes : null;
-            int limit = live ? p.speedLimit : testing && !navigating ? 60 : 0;
-            boolean over = live && p.over;
+            float pad = h * 0.04f;
+
+            if (w >= h * 2f) {
+                // Wide: arrow on the left, distance and instruction beside it, arrival line along the bottom.
+                float iconSize = h * 0.62f;
+                float textLeft = pad;
+                if (ic != null) {
+                    Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
+                    textLeft += iconSize;
+                }
+                fit(big, d, h * 0.32f, w - textLeft);
+                c.drawText(d, textLeft, h * 0.34f, big);
+                small.setTextSize(h * 0.14f);
+                c.drawText(TextUtils.ellipsize(t, small, Math.max(10, w - textLeft), TextUtils.TruncateAt.END)
+                        .toString(), textLeft, h * 0.56f, small);
+            } else {
+                // Narrower: arrow and distance across the top, the instruction on up to two lines under them.
+                float iconSize = Math.min(h * 0.46f, w * 0.48f);
+                float textLeft = pad;
+                if (ic != null) {
+                    Maneuvers.draw(c, ic, 0, 0, iconSize, shape);
+                    textLeft += iconSize;
+                }
+                fit(big, d, iconSize * 0.6f, w - textLeft - pad);
+                c.drawText(d, textLeft, iconSize * 0.5f - (big.ascent() + big.descent()) / 2f, big);
+                small.setTextSize(Math.min(h * 0.1f, w * 0.09f));
+                android.text.StaticLayout lines = android.text.StaticLayout.Builder
+                        .obtain(t, 0, t.length(), small, (int) Math.max(10, w - pad * 2))
+                        .setMaxLines(2)
+                        .setEllipsize(TextUtils.TruncateAt.END)
+                        .build();
+                c.save();
+                c.translate(pad, iconSize + pad * 0.5f);
+                lines.draw(c);
+                c.restore();
+            }
 
             if (spot != null) {
                 // Coming up to a junction with marked lanes: the lanes to be in take the bottom line.
-                dim.setColor(0xFF56606A);
-                float cell = Math.min(h * 0.36f, (w - h * 0.06f) / spot.arrows.length);
-                Lanes.draw(c, spot, h * 0.06f, h - cell, cell, shape, dim);
+                float cell = Math.min(h * 0.24f, (w - pad) / spot.arrows.length);
+                Lanes.draw(c, spot, pad, h - cell, cell, shape, dim);
             } else {
-                foot.setTextSize(h * 0.17f);
-                c.drawText(TextUtils.ellipsize(f, foot, w - h * 0.06f, TextUtils.TruncateAt.END).toString(),
-                        h * 0.06f, h * 0.92f, foot);
-            }
-
-            if (limit > 0) {
-                // The speed limit, top right: a red ring, filled red once the car is over it.
-                float r = h * 0.17f, x = w - r - h * 0.02f, y = r + h * 0.03f;
-                ring.setColor(0xFFFF3B30);
-                ring.setStyle(over ? Paint.Style.FILL_AND_STROKE : Paint.Style.STROKE);
-                ring.setStrokeWidth(r * 0.22f);
-                c.drawCircle(x, y, r * 0.88f, ring);
-                number.setColor(0xFFFFFFFF);
-                number.setTextAlign(Paint.Align.CENTER);
-                number.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-                number.setTextSize(limit >= 100 ? r * 0.8f : r);
-                c.drawText(String.valueOf(limit), x, y - (number.ascent() + number.descent()) / 2f, number);
+                fit(foot, f, w >= h * 2f ? h * 0.16f : h * 0.12f, w - pad * 2);
+                c.drawText(f, pad, h - pad - foot.descent(), foot);
             }
         }
     }

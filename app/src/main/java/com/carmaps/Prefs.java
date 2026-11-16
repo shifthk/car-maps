@@ -154,20 +154,20 @@ final class Prefs {
     int hudGap() { return p.getInt("hudGap", 30); }
     void setHudGap(int v) { p.edit().putInt("hudGap", v).apply(); }
 
-    /** The mini map's width and height, each as a percentage of the directions' height. */
+    /** The mini map's width and height, each as a percentage of the HUD's height. */
     int hudMapW() { return p.getInt("hudMapW", 100); }
     void setHudMapW(int v) { p.edit().putInt("hudMapW", v).apply(); }
 
     int hudMapH() { return p.getInt("hudMapH", 100); }
     void setHudMapH(int v) { p.edit().putInt("hudMapH", v).apply(); }
 
-    /** 0 = top, 100 = bottom. */
-    int hudY() { return p.getInt("hudY", 50); }
-    void setHudY(int v) { p.edit().putInt("hudY", v).apply(); }
+    /** A map of the roads around the car on the HUD while no route is being followed. */
+    boolean hudSurround() { return p.getBoolean("hudSurround", true); }
+    void setHudSurround(boolean v) { p.edit().putBoolean("hudSurround", v).apply(); }
 
-    /** Panel height as a percentage of the HUD's height. */
-    int hudSize() { return p.getInt("hudSize", 70); }
-    void setHudSize(int v) { p.edit().putInt("hudSize", v).apply(); }
+    /** Diameter of the empty circle in the middle of that map, as a percentage of the HUD's height. */
+    int hudHole() { return p.getInt("hudHole", 70); }
+    void setHudHole(int v) { p.edit().putInt("hudHole", v).apply(); }
 
     int hudOpacity() { return p.getInt("hudOpacity", 100); }
     void setHudOpacity(int v) { p.edit().putInt("hudOpacity", v).apply(); }

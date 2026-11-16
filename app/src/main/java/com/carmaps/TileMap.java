@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.7 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.8 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -129,6 +129,13 @@ final class TileMap extends View {
     private final ScaleGestureDetector pinch;
     private Listener listener;
     private boolean dark;
+    /**
+     * Drawn for the head-up display: OpenStreetMap's tiles reduced to their roads (bright on a
+     * see-through background, since black is unlit on a HUD), no TomTom, no traffic, no car marker.
+     */
+    private boolean hudStyle;
+    /** Where the car sits top to bottom while the map is turned, as a fraction of the height. */
+    private float turnedAnchor = 0.68f;
 
     /** Centre of the view, in map units: 0..1 across the whole world, x east and y south. */
     private double cx = 0.5, cy = 0.5;
@@ -377,6 +384,17 @@ final class TileMap extends View {
         invalidate();
     }
 
+    /** See {@link #hudStyle}. */
+    void setHudStyle(boolean on) {
+        hudStyle = on;
+        invalidate();
+    }
+
+    void setTurnedAnchor(float fraction) {
+        turnedAnchor = fraction;
+        invalidate();
+    }
+
     void setHeadingUp(boolean on) {
         if (headingUp == on) return;
         headingUp = on;
@@ -481,11 +499,11 @@ final class TileMap extends View {
     protected void onDraw(Canvas c) {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0) return;
-        c.drawColor(dark ? 0xFF1B1F24 : 0xFFE8E6E1);
-        boolean tomtom = mapKey != null && SystemClock.elapsedRealtime() >= mapBlockedUntil;
+        boolean tomtom = !hudStyle && mapKey != null && SystemClock.elapsedRealtime() >= mapBlockedUntil;
+        if (!hudStyle) c.drawColor(dark ? 0xFF1B1F24 : 0xFFE8E6E1);
         // TomTom has a night map of its own; OpenStreetMap's tiles are recoloured instead.
-        prefix = tomtom ? (dark ? "n/" : "m/") : "";
-        tilePaint.setColorFilter(dark && !tomtom ? darkFilter : null);
+        prefix = hudStyle ? "h/" : tomtom ? (dark ? "n/" : "m/") : "";
+        tilePaint.setColorFilter(dark && !tomtom && !hudStyle ? darkFilter : null);
 
         // Glide the car from its last position and heading to the new ones over the second between GPS fixes.
         boolean gliding = false;
@@ -507,7 +525,7 @@ final class TileMap extends View {
         boolean turned = headingUp && follow && haveCar;
         rotation = turned ? carBearing : 0f;
         ax = w / 2f;
-        ay = turned ? h * 0.68f : h / 2f;
+        ay = turned ? h * turnedAnchor : h / 2f;
 
         final Set<String> needed = ConcurrentHashMap.newKeySet();
         visible = needed;
@@ -532,7 +550,7 @@ final class TileMap extends View {
                 // A hair of overlap hides the seams between tiles.
                 dst.set(left, top, (float) (left + size) + 0.5f, (float) (top + size) + 0.5f);
                 drawTile(c, z, wrapped, ty);
-                if (trafficKey != null && z >= TRAFFIC_MIN_ZOOM) drawTraffic(c, z, wrapped, ty);
+                if (trafficKey != null && !hudStyle && z >= TRAFFIC_MIN_ZOOM) drawTraffic(c, z, wrapped, ty);
             }
         }
 
@@ -549,10 +567,20 @@ final class TileMap extends View {
             drawPin(c, px, py);
             c.restoreToCount(upright);
         }
-        if (haveCar) drawCar(c, (float) ((carX - cx) * world + ax), (float) ((carY - cy) * world + ay));
+        if (haveCar && !hudStyle) drawCar(c, (float) ((carX - cx) * world + ax), (float) ((carY - cy) * world + ay));
         c.restoreToCount(turnedBack);
 
         paint.setStyle(Paint.Style.FILL);
+        if (hudStyle) {
+            // On the HUD a box behind the credit would glow: just small, dim text in the corner.
+            paint.setTextSize(10 * density);
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setColor(0x80FFFFFF);
+            c.drawText("© OpenStreetMap", w - 4 * density, h - 4 * density, paint);
+            paint.setTextAlign(Paint.Align.LEFT);
+            if (gliding) postInvalidateOnAnimation();
+            return;
+        }
         paint.setTextSize(11 * density);
         paint.setTextAlign(Paint.Align.RIGHT);
         paint.setColor(dark ? 0xB0000000 : 0xB0FFFFFF);
@@ -787,6 +815,11 @@ final class TileMap extends View {
     }
 
     private Bitmap load(String key) {
+        if (key.startsWith("h/")) {
+            // The HUD's version of an OpenStreetMap tile: the same file on disk, recoloured once here.
+            Bitmap b = load(key.substring(2));
+            return b == null ? null : roadsOnly(b);
+        }
         final boolean tomtom = isTomTom(key);
         final String apiKey = mapKey;
         if (tomtom && apiKey == null) return null;
@@ -840,6 +873,26 @@ final class TileMap extends View {
             if (c != null) c.disconnect();
         }
         return have ? BitmapFactory.decodeFile(file.getPath(), opts) : null;
+    }
+
+    /**
+     * Keeps only the roads of an OpenStreetMap tile, for the HUD: main roads (drawn yellow, orange
+     * or pink by OpenStreetMap) in amber, other roads (drawn white) in pale blue, and everything else
+     * see-through. Checked against tiles of inner Sydney; white label halos come through too, which
+     * leaves street names readable as outlines along their roads.
+     */
+    private static Bitmap roadsOnly(Bitmap tile) {
+        int w = tile.getWidth(), h = tile.getHeight();
+        int[] px = new int[w * h];
+        tile.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+            if (r >= 248 && g >= 248 && b >= 248) px[i] = 0xFF96CDEB;
+            else if (r >= 225 && r - b >= 40 && b < 200 && g >= 120) px[i] = 0xFFFFC450;
+            else px[i] = 0;
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
     }
 
     /** Keeps the tiles on disk under a limit by deleting the ones not touched for longest. */

@@ -175,7 +175,7 @@ public class MainActivity extends Activity {
 
         // ---- HUD
         heading("Head-up display");
-        toggle("Show directions on the HUD", prefs.hud(), prefs::setHud);
+        toggle("Use the HUD", prefs.hud(), prefs::setHud);
         toggle("Mini map of the route ahead", prefs.hudMap(), prefs::setHudMap);
         choice("Kind of window on the HUD (change it if the directions don't appear on top)",
                 new String[]{"Second-screen window (as Zeekr Shortcut uses)", "Display-over-apps window"},
@@ -197,10 +197,12 @@ public class MainActivity extends Activity {
 
         slider("Gap in the middle (for the car's speed readout)", 0, 70, prefs.hudGap(), prefs::setHudGap);
         slider("Left / right", 0, 100, prefs.hudX(), prefs::setHudX);
-        slider("Up / down", 0, 100, prefs.hudY(), prefs::setHudY);
-        slider("Size", 30, 100, prefs.hudSize(), prefs::setHudSize);
-        slider("Mini map width", 40, 300, prefs.hudMapW(), prefs::setHudMapW);
-        slider("Mini map height", 40, 200, prefs.hudMapH(), prefs::setHudMapH);
+        slider("Mini map width", 30, 300, prefs.hudMapW(), prefs::setHudMapW);
+        slider("Mini map height", 30, 100, prefs.hudMapH(), prefs::setHudMapH);
+        toggle("Map of the roads around the car when not following a route", prefs.hudSurround(),
+                prefs::setHudSurround);
+        slider("Empty circle in the middle of that map (for the car's speed readout)", 0, 100,
+                prefs.hudHole(), prefs::setHudHole);
         slider("Brightness", 20, 100, prefs.hudOpacity(), prefs::setHudOpacity);
         root.addView(button("Show a sample on the HUD for 20 seconds", v -> {
             if (!MapService.running) {

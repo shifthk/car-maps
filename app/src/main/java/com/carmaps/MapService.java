@@ -308,6 +308,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         hud.setBearing(bearing);
 
         double lat = l.getLatitude(), lng = l.getLongitude();
+        hud.setCar(lat, lng, (float) bearing);
         if (navigating && nav != null) {
             Nav.Progress p = nav.update(lat, lng, l.hasAccuracy() ? l.getAccuracy() : 0f);
             if (p.offRoute) {
