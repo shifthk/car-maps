@@ -6,9 +6,12 @@ An OpenStreetMap map in a floating window for an Android car screen (built for t
   - Tap the round button on the window's top right corner to hide or show the map.
   - Drag the round button to move the window; drag the grip in the bottom left corner to resize it.
   - Drag the map to move it, pinch or double-tap to zoom. The ◎ button goes back to following the car.
+  - The **N / ▲** button switches between north up and turning the map so the way ahead is up while it follows the car (place names on the map turn with it).
   - The **$** button switches between allowing and avoiding toll roads (crossed out in red while avoiding). If a route is showing or being followed, it is worked out again straight away.
+- **Saved places**: buttons for Home, Work and your favourites sit under the search box. Tap ☆ beside any search result or recent place to save it; hold a saved button to change or clear it.
 - **Finding somewhere**: type in the search box (results appear as you type, nearest first), pick one of your recent places, or hold a finger on the map to drop a pin.
-- **Route**: the app draws the driving route and shows its time, distance and arrival time. Tap **Start**.
+- **Route**: the app draws up to three driving routes, with a button for each showing its time, distance and whether it has tolls. Tap one to choose it, then **Start**.
+- **Day and night**: the map goes dark at sunset and light at sunrise where the car is; settings can fix it light or dark, or follow the car's own theme.
 - **Guidance**: the next turn shows in the bar under the map, on the HUD (arrow, distance, instruction, arrival time, and a mini map of the route ahead with the car pointing up), and is spoken if the car has a text-to-speech engine. Leave the route and it finds a new one.
 
 - **TomTom (optional)**: enter a free TomTom key in the settings and:
@@ -16,6 +19,9 @@ An OpenStreetMap map in a floating window for an Android car screen (built for t
   - search results come from TomTom;
   - routes and arrival times come from TomTom and allow for current traffic;
   - while you drive, the route is re-checked every three minutes, so it changes if a faster way opens up.
+  - the speed limit shows on the map and the HUD, turning red when you are over it;
+  - before junctions with marked lanes, a row of arrows on the map and the HUD shows which lanes to be in;
+  - crashes, roadworks and closures show as markers on the map, and one on your route is announced a few kilometres ahead.
   - If TomTom turns the key away or its allowance runs out, each part falls back to its OpenStreetMap equivalent. With no key, arrival times assume clear roads.
 
 ## How it works
@@ -60,6 +66,6 @@ The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Tested and not tested
 
-Version 2.0 (the OpenStreetMap map, search, the on-top HUD window and the updater) compiles, and the services it calls were checked to answer, but it has not been run on any device yet. The TomTom parts (map, search, routes and traffic, versions 2.1 and 2.2) were written from TomTom's documentation and have not been run with a real key: the only check made was that TomTom's server turns away a wrong key. The earlier Google-based version was run on a tablet with a simulated HUD display; the route following, HUD picture and floating window mechanics carried over from it.
+Version 2.0 (the OpenStreetMap map, search, the on-top HUD window and the updater) compiles, and the services it calls were checked to answer, but it has not been run on any device yet. Version 2.7's additions (saved places, route choices, the turning map, speed limits, lanes, incidents, automatic night colours) have not been run on a device either. The TomTom parts (map, search, routes and traffic, versions 2.1 and 2.2, and 2.7's limits, lanes and incidents) were written from TomTom's documentation and have not been run with a real key: the only check made was that TomTom's server turns away a wrong key. The earlier Google-based version was run on a tablet with a simulated HUD display; the route following, HUD picture and floating window mechanics carried over from it.
 
 Never tested: anything on the car itself (whether it gives the app a GPS position, the real HUD, starting with the car) or while driving (turn progress, rerouting, arrival, speech).

@@ -28,10 +28,12 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -61,6 +63,9 @@ final class MapWindow implements TileMap.Listener {
 
         /** The tolls button was tapped: the setting has already been changed. */
         void tollsChanged();
+
+        /** One of the routes on offer was tapped. */
+        void chooseRoute(int index);
     }
 
     private static final String TAG = "MapWindow";
@@ -83,7 +88,10 @@ final class MapWindow implements TileMap.Listener {
     private final TileMap map;
     private final ScrollView resultsScroll;
     private final LinearLayout results;
-    private final TextView recenter, trafficButton, tollButton;
+    private final TextView recenter, trafficButton, tollButton, compass;
+    private final LinearLayout chips, choices;
+    private final SpeedSign speedSign;
+    private final LaneStrip laneStrip;
 
     // The bar under the map.
     private final LinearLayout bar;
@@ -185,34 +193,31 @@ final class MapWindow implements TileMap.Listener {
         content.addView(top, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // ---- saved places: Home, Work and favourites, one tap each
+        HorizontalScrollView chipScroll = new HorizontalScrollView(ui);
+        chipScroll.setHorizontalScrollBarEnabled(false);
+        chipScroll.setBackgroundColor(0xFF20252B);
+        chips = new LinearLayout(ui);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(dp(10), dp(6), dp(10), dp(6));
+        chipScroll.addView(chips);
+        content.addView(chipScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         // ---- map, with the results list and the buttons over it
         FrameLayout middle = new FrameLayout(ui);
         map = new TileMap(ui);
         map.setListener(this);
-        map.setDark(prefs.darkMap());
         middle.addView(map, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // Right: where the map looks. Left: how it behaves.
         LinearLayout side = new LinearLayout(ui);
         side.setOrientation(LinearLayout.VERTICAL);
         recenter = roundButton("◎", v -> {
             map.setFollow(true);
             updateRecenter();
         });
-        // Live traffic on and off; only there once a TomTom key has been entered in the settings.
-        trafficButton = roundButton("\uD83D\uDEA6", v -> {
-            prefs.setTraffic(!prefs.traffic());
-            refresh();
-        });
-        trafficButton.setTextSize(20);
-        side.addView(trafficButton);
-        // Tolls allowed or avoided; crossed out in red while they are being avoided.
-        tollButton = roundButton("$", v -> {
-            prefs.setAvoidTolls(!prefs.avoidTolls());
-            refresh();
-            host.tollsChanged();
-        });
-        side.addView(tollButton);
         side.addView(recenter);
         side.addView(roundButton("+", v -> map.zoomBy(1)));
         side.addView(roundButton("−", v -> map.zoomBy(-1)));
@@ -220,6 +225,47 @@ final class MapWindow implements TileMap.Listener {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.BOTTOM);
         slp.setMargins(0, 0, dp(10), dp(26));
         middle.addView(side, slp);
+
+        LinearLayout left = new LinearLayout(ui);
+        left.setOrientation(LinearLayout.VERTICAL);
+        // North up, or turned so the way ahead is up while following the car.
+        compass = roundButton("N", v -> {
+            prefs.setHeadingUp(!prefs.headingUp());
+            refresh();
+        });
+        left.addView(compass);
+        // Tolls allowed or avoided; crossed out in red while they are being avoided.
+        tollButton = roundButton("$", v -> {
+            prefs.setAvoidTolls(!prefs.avoidTolls());
+            refresh();
+            host.tollsChanged();
+        });
+        left.addView(tollButton);
+        // Live traffic on and off; only there once a TomTom key has been entered in the settings.
+        trafficButton = roundButton("\uD83D\uDEA6", v -> {
+            prefs.setTraffic(!prefs.traffic());
+            refresh();
+        });
+        trafficButton.setTextSize(20);
+        left.addView(trafficButton);
+        FrameLayout.LayoutParams llp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.START | Gravity.BOTTOM);
+        llp.setMargins(dp(10), 0, 0, dp(26));
+        middle.addView(left, llp);
+
+        // The speed limit (top left) and the lanes to be in (top middle), while being guided.
+        speedSign = new SpeedSign(ui);
+        speedSign.setVisibility(View.GONE);
+        FrameLayout.LayoutParams sgp = new FrameLayout.LayoutParams(dp(60), dp(60), Gravity.TOP | Gravity.START);
+        sgp.setMargins(dp(10), dp(10), 0, 0);
+        middle.addView(speedSign, sgp);
+        laneStrip = new LaneStrip(ui);
+        laneStrip.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lnp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        lnp.topMargin = dp(10);
+        middle.addView(laneStrip, lnp);
 
         resultsScroll = new ScrollView(ui);
         resultsScroll.setBackgroundColor(0xF2262B31);
@@ -230,6 +276,15 @@ final class MapWindow implements TileMap.Listener {
         middle.addView(resultsScroll, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
         content.addView(middle, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // ---- the routes on offer, when there is more than one
+        choices = new LinearLayout(ui);
+        choices.setOrientation(LinearLayout.HORIZONTAL);
+        choices.setBackgroundColor(0xFF1B1F24);
+        choices.setPadding(dp(6), dp(6), dp(2), dp(6));
+        choices.setVisibility(View.GONE);
+        content.addView(choices, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // ---- bar
         bar = new LinearLayout(ui);
@@ -336,7 +391,11 @@ final class MapWindow implements TileMap.Listener {
 
     /** Settings changed. */
     void refresh() {
-        map.setDark(prefs.darkMap());
+        boolean up = prefs.headingUp();
+        map.setHeadingUp(up);
+        compass.setText(up ? "▲" : "N");
+        compass.setTextColor(up ? 0xFF4C9BFF : 0xFFFFFFFF);
+        refreshSaved();
         String key = prefs.tomtomKey();
         boolean on = !key.isEmpty() && prefs.traffic();
         map.setMap(key.isEmpty() ? null : key);
@@ -373,6 +432,7 @@ final class MapWindow implements TileMap.Listener {
     void showPlace(Router.Dest d) {
         setSearchText(d.name);
         hideResults();
+        choices.setVisibility(View.GONE);
         map.clearRoute();
         map.setPin(d.lat, d.lng);
         map.centerOn(d.lat, d.lng, 14);
@@ -381,6 +441,8 @@ final class MapWindow implements TileMap.Listener {
 
     /** Draws a route. {@code overview}: step back to show all of it (before setting off). */
     void showRoute(Nav.Route r, boolean overview) {
+        choices.setVisibility(View.GONE);
+        map.setAlternates(null, null);
         map.setRoute(r.lat, r.lng);
         int last = r.lat.length - 1;
         map.setPin(r.lat[last], r.lng[last]);
@@ -389,8 +451,85 @@ final class MapWindow implements TileMap.Listener {
     }
 
     void clearRoute() {
+        choices.setVisibility(View.GONE);
         map.clearRoute();
         map.clearPin();
+    }
+
+    /**
+     * Draws the routes on offer, the chosen one in blue and the others in grey, with a button for each
+     * under the map. {@code overview}: step back to show the whole of the chosen route.
+     */
+    void showRoutes(List<Nav.Route> routes, int chosen, boolean overview) {
+        Nav.Route r = routes.get(chosen);
+        List<double[]> lats = new ArrayList<>(), lngs = new ArrayList<>();
+        for (int i = 0; i < routes.size(); i++) {
+            if (i == chosen) continue;
+            lats.add(routes.get(i).lat);
+            lngs.add(routes.get(i).lng);
+        }
+        map.setAlternates(lats, lngs);
+        map.setRoute(r.lat, r.lng);
+        int last = r.lat.length - 1;
+        map.setPin(r.lat[last], r.lng[last]);
+        if (overview) map.fitRoute();
+        updateRecenter();
+
+        choices.removeAllViews();
+        if (routes.size() < 2) {
+            choices.setVisibility(View.GONE);
+            return;
+        }
+        for (int i = 0; i < routes.size(); i++) {
+            final int index = i;
+            Nav.Route o = routes.get(i);
+            TextView t = label(15, i == chosen);
+            t.setSingleLine(false);
+            t.setMaxLines(2);
+            t.setGravity(Gravity.CENTER);
+            t.setText(Geo.duration(o.durationSec) + "\n" + Geo.distance(o.totalDist) + (o.hasTolls ? "  ·  tolls" : ""));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setCornerRadius(dp(12));
+            bg.setColor(i == chosen ? 0xFF1A73E8 : 0xFF2F363E);
+            t.setBackground(bg);
+            t.setPadding(dp(6), dp(6), dp(6), dp(6));
+            t.setOnClickListener(v -> host.chooseRoute(index));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.rightMargin = dp(4);
+            choices.addView(t, lp);
+        }
+        choices.setVisibility(View.VISIBLE);
+    }
+
+    void setDark(boolean on) {
+        map.setDark(on);
+    }
+
+    /** The limit on this stretch (0 for none known), red when the car is over it. */
+    void setSpeed(int limitKmh, boolean over) {
+        speedSign.set(limitKmh, over);
+    }
+
+    /** The lanes to be in for the coming junction, or null. */
+    void setLanes(Nav.LaneSpot spot) {
+        laneStrip.set(spot);
+    }
+
+    void setIncidents(List<Router.Incident> list) {
+        int n = list.size();
+        double[] lat = new double[n], lng = new double[n];
+        int[] category = new int[n];
+        for (int i = 0; i < n; i++) {
+            lat[i] = list.get(i).lat;
+            lng[i] = list.get(i).lng;
+            category[i] = list.get(i).category;
+        }
+        map.setIncidents(lat, lng, category);
+    }
+
+    /** True while only the round button is showing. */
+    boolean isCollapsed() {
+        return collapsed;
     }
 
     /** Guidance started or ended: while guiding, the map stays on the car, zoomed in. */
@@ -398,6 +537,7 @@ final class MapWindow implements TileMap.Listener {
         guiding = on;
         icon.setActive(on);
         if (on) {
+            choices.setVisibility(View.GONE);
             map.setFollow(true);
             map.setZoom(17);
             hideResults();
@@ -559,6 +699,14 @@ final class MapWindow implements TileMap.Listener {
             far.setPadding(dp(12), 0, 0, 0);
             row.addView(far);
         }
+        // A star to save the place as Home, Work or a favourite.
+        boolean saved = prefs.isFavourite(d) || Prefs.same(d, prefs.place("home")) || Prefs.same(d, prefs.place("work"));
+        TextView star = label(24, false);
+        star.setText(saved ? "★" : "☆");
+        star.setTextColor(saved ? 0xFFFFC53D : 0xFF9AA4AE);
+        star.setGravity(Gravity.CENTER);
+        star.setOnClickListener(v -> showSaveMenu(d));
+        row.addView(star, new LinearLayout.LayoutParams(dp(56), dp(48)));
         row.setOnClickListener(v -> {
             setFocused(false);
             host.pick(d);
@@ -599,6 +747,84 @@ final class MapWindow implements TileMap.Listener {
         barButton.setBackgroundColor(whileGuiding ? 0xFFD9453A : 0xFF1A73E8);
         barAction = run;
         bar.setVisibility(View.VISIBLE);
+    }
+
+    // ------------------------------------------------------------------ saved places
+
+    /** The row of buttons under the search box: Home, Work, then the favourites. */
+    private void refreshSaved() {
+        chips.removeAllViews();
+        chips.addView(chip("Home", prefs.place("home")));
+        chips.addView(chip("Work", prefs.place("work")));
+        for (Router.Dest d : prefs.favourites()) chips.addView(chip(d.name, d));
+    }
+
+    private View chip(String text, Router.Dest d) {
+        TextView t = label(15, d != null);
+        t.setText(text);
+        t.setMaxWidth(dp(190));
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(16), 0, dp(16), 0);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(20));
+        bg.setColor(d == null ? 0xFF2A3037 : 0xFF34404C);
+        t.setBackground(bg);
+        if (d == null) t.setTextColor(0xFF9AA4AE);
+        t.setOnClickListener(v -> {
+            if (d == null) {
+                listRows(null, null, "To set " + text + ": search for the place, tap ☆ beside it, then choose Set as "
+                        + text + ".");
+                return;
+            }
+            setFocused(false);
+            hideResults();
+            host.pick(d);
+        });
+        // Holding a saved place offers to clear or change it.
+        if (d != null) {
+            t.setOnLongClickListener(v -> {
+                showSaveMenu(d);
+                return true;
+            });
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
+        lp.rightMargin = dp(8);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    /** In place of the results: what to save a place as. */
+    private void showSaveMenu(Router.Dest d) {
+        final boolean home = Prefs.same(d, prefs.place("home")), work = Prefs.same(d, prefs.place("work"));
+        final boolean favourite = prefs.isFavourite(d);
+        results.removeAllViews();
+        TextView heading = label(12, true);
+        heading.setText(d.name.toUpperCase(java.util.Locale.ROOT));
+        heading.setTextColor(0xFF9AA4AE);
+        heading.setPadding(dp(18), dp(10), dp(18), dp(2));
+        results.addView(heading);
+        results.addView(action(home ? "Clear Home" : "Set as Home", () -> prefs.setPlace("home", home ? null : d)));
+        results.addView(action(work ? "Clear Work" : "Set as Work", () -> prefs.setPlace("work", work ? null : d)));
+        results.addView(action(favourite ? "Remove from favourites" : "Add to favourites",
+                () -> prefs.setFavourite(d, !favourite)));
+        results.addView(action("Cancel", null));
+        resultsScroll.scrollTo(0, 0);
+        resultsScroll.setVisibility(View.VISIBLE);
+    }
+
+    private View action(String text, Runnable run) {
+        TextView t = label(18, false);
+        t.setText(text);
+        t.setGravity(Gravity.CENTER_VERTICAL);
+        t.setMinHeight(dp(56));
+        t.setPadding(dp(18), 0, dp(18), 0);
+        t.setOnClickListener(v -> {
+            if (run != null) run.run();
+            refreshSaved();
+            hideResults();
+            setFocused(false);
+        });
+        return t;
     }
 
     // ------------------------------------------------------------------ keyboard focus
@@ -863,6 +1089,78 @@ final class MapWindow implements TileMap.Listener {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFFFFFFFF);
             c.drawPath(arrow, paint);
+        }
+    }
+
+    /** A round speed limit sign: red ring on white, or solid red once the car is over the limit. */
+    private static final class SpeedSign extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int limit;
+        private boolean over;
+
+        SpeedSign(Context c) {
+            super(c);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+
+        void set(int limit, boolean over) {
+            if (this.limit == limit && this.over == over) return;
+            this.limit = limit;
+            this.over = over;
+            setVisibility(limit > 0 ? VISIBLE : GONE);
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float r = Math.min(getWidth(), getHeight()) / 2f, x = getWidth() / 2f, y = getHeight() / 2f;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(over ? 0xFFD93025 : 0xFFFFFFFF);
+            c.drawCircle(x, y, r, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(r * 0.2f);
+            paint.setColor(over ? 0xFFFFFFFF : 0xFFD93025);
+            c.drawCircle(x, y, r * 0.88f, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(over ? 0xFFFFFFFF : 0xFF111111);
+            paint.setTextSize(limit >= 100 ? r * 0.78f : r * 0.95f);
+            c.drawText(String.valueOf(limit), x, y - (paint.ascent() + paint.descent()) / 2f, paint);
+        }
+    }
+
+    /** One arrow per lane, the lanes to be in drawn in white and the others in grey. */
+    private final class LaneStrip extends View {
+        private final Paint on = new Paint(Paint.ANTI_ALIAS_FLAG), off = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint back = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private Nav.LaneSpot spot;
+
+        LaneStrip(Context c) {
+            super(c);
+            on.setColor(0xFFFFFFFF);
+            off.setColor(0xFF6B7682);
+            back.setColor(0xE61B1F24);
+        }
+
+        void set(Nav.LaneSpot spot) {
+            if (this.spot == spot) return;
+            this.spot = spot;
+            setVisibility(spot == null ? GONE : VISIBLE);
+            requestLayout();
+            invalidate();
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int lanes = spot == null ? 0 : spot.arrows.length;
+            setMeasuredDimension(lanes * dp(44) + dp(16), dp(52));
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            if (spot == null) return;
+            c.drawRoundRect(0, 0, getWidth(), getHeight(), dp(12), dp(12), back);
+            Lanes.draw(c, spot, dp(8), dp(4), dp(44), on, off);
         }
     }
 

@@ -29,6 +29,8 @@ import android.view.ContextThemeWrapper;
 import android.view.Display;
 import android.view.WindowManager;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -55,6 +57,9 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private static final long MIN_REROUTE_GAP_MS = 8000;
     private static final int OFF_ROUTE_FIXES = 3;
     private static final double ARRIVE_M = 35;
+    /** Incidents are asked for again after this long, or sooner once the car has moved this far. */
+    private static final long INCIDENT_GAP_MS = 10 * 60 * 1000;
+    private static final double INCIDENT_MOVE_M = 12000;
     /** While following a TomTom route, ask again this often so the route and arrival time keep up with traffic. */
     private static final long TRAFFIC_REFRESH_MS = 3 * 60 * 1000;
 
@@ -96,7 +101,24 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     /** Where the user wants to go, the route there once it is known, and whether it is being followed. */
     private Router.Dest dest;
     private Nav.Route route;
+    /** Every route on offer for the destination; {@link #route} is the chosen one. */
+    private List<Nav.Route> routes = new ArrayList<>();
     private Nav nav;
+
+    private List<Router.Incident> incidents = new ArrayList<>();
+    private final HashSet<String> warned = new HashSet<>();
+    private boolean incidentPending;
+    private long incidentsAt;
+    private double incidentLat, incidentLng;
+
+    /** Map colours can depend on the time of day: look again every minute. */
+    private final Runnable themeTick = new Runnable() {
+        @Override
+        public void run() {
+            applyTheme();
+            main.postDelayed(this, 60000);
+        }
+    };
     private boolean navigating;
     private int routeSeq;
     private boolean routePending;
@@ -139,6 +161,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         hud = new Hud(this, prefs);
         locations = getSystemService(LocationManager.class);
         goForeground();
+        main.postDelayed(themeTick, 60000);
     }
 
     @Override
@@ -167,6 +190,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         startLocation();
         window.refresh();
         hud.refresh();
+        applyTheme();
         if (prefs.voice() && speaker == null) speaker = new Speaker(this);
         if (!prefs.voice() && speaker != null) {
             speaker.release();
@@ -195,6 +219,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         super.onConfigurationChanged(newConfig);
         int[] size = screenSize();
         window.onScreenChanged(size[0], size[1]);
+        applyTheme();   // the car may have just switched between its day and night looks
     }
 
     private int[] screenSize() {
@@ -304,11 +329,107 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
             }
             showProgress(p);
             speakFor(p, l.hasSpeed() ? l.getSpeed() : 0f);
+            warnIncidents(p);
             if (!routePending && offRouteCount >= OFF_ROUTE_FIXES && now - lastRouteRequest > MIN_REROUTE_GAP_MS) {
                 requestRoute(false);
             }
         }
         window.setCar(lat, lng, bearing);
+        checkIncidents(l);
+    }
+
+    /** Dark or light map, by the setting: fixed, by the sun where the car is, or by the car's own theme. */
+    private void applyTheme() {
+        int mode = prefs.theme();
+        boolean dark;
+        if (mode == 0) {
+            dark = false;
+        } else if (mode == 1) {
+            dark = true;
+        } else if (mode == 3) {
+            dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                    == Configuration.UI_MODE_NIGHT_YES;
+        } else if (last != null) {
+            dark = Geo.isNight(last.getLatitude(), last.getLongitude(), System.currentTimeMillis());
+        } else {
+            // No position yet to work the sun out from: go by the clock.
+            int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+            dark = hour < 6 || hour >= 19;
+        }
+        window.setDark(dark);
+    }
+
+    // ------------------------------------------------------------------ incidents
+
+    /** Fetches TomTom's incidents around the car now and then, while the map is in use. */
+    private void checkIncidents(Location l) {
+        final String key = prefs.tomtomKey();
+        if (key.isEmpty() || !prefs.incidents()) {
+            if (!incidents.isEmpty()) {
+                incidents = new ArrayList<>();
+                window.setIncidents(incidents);
+            }
+            return;
+        }
+        if (incidentPending || (window.isCollapsed() && !navigating)) return;
+        long now = SystemClock.elapsedRealtime();
+        final double lat = l.getLatitude(), lng = l.getLongitude();
+        if (incidentsAt != 0) {
+            long age = now - incidentsAt;
+            boolean moved = Geo.dist(incidentLat, incidentLng, lat, lng) > INCIDENT_MOVE_M;
+            if (age < 60000 || (age < INCIDENT_GAP_MS && !moved)) return;
+        }
+        incidentPending = true;
+        incidentsAt = now;
+        incidentLat = lat;
+        incidentLng = lng;
+        io.execute(() -> {
+            try {
+                final List<Router.Incident> found = Router.incidents(lat, lng, key);
+                main.post(() -> {
+                    incidentPending = false;
+                    incidents = found;
+                    window.setIncidents(found);
+                    matchIncidents();
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Incidents failed: " + e.getMessage());
+                main.post(() -> incidentPending = false);
+            }
+        });
+    }
+
+    /** Works out which incidents lie on the route being followed, and how far along it. */
+    private void matchIncidents() {
+        Nav.Route r = navigating ? route : null;
+        for (Router.Incident inc : incidents) {
+            inc.routeDist = -1;
+            if (r == null || inc.line.length < 2) continue;
+            double[] start = Nav.offsetOf(r, inc.line[0], inc.line[1]);
+            boolean startOn = start[1] < 30;
+            if (inc.line.length >= 4) {
+                double[] end = Nav.offsetOf(r, inc.line[2], inc.line[3]);
+                boolean endOn = end[1] < 30;
+                // It runs the opposite way to the route: it is on the other side of the road.
+                if (startOn && endOn && start[0] > end[0] + 20) continue;
+                if (!startOn && endOn) inc.routeDist = end[0];
+            }
+            if (startOn) inc.routeDist = start[0];
+        }
+    }
+
+    /** Says once, a couple of kilometres out, that there is something on the route ahead. */
+    private void warnIncidents(Nav.Progress p) {
+        if (p.offRoute) return;
+        for (Router.Incident inc : incidents) {
+            if (inc.routeDist < 0 || warned.contains(inc.id)) continue;
+            double ahead = inc.routeDist - p.along;
+            if (ahead > 150 && ahead < 3000) {
+                if (warned.size() > 500) warned.clear();
+                warned.add(inc.id);
+                say(Router.incidentName(inc.category) + " ahead, in " + Geo.spokenDistance(ahead));
+            }
+        }
     }
 
     @Override
@@ -351,6 +472,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         if (navigating) endNav();
         dest = place;
         route = null;
+        routes = new ArrayList<>();
         if (!"Dropped pin".equals(place.name)) prefs.addRecent(place);
         window.showPlace(place);
         window.showMessage("Finding a route…", place.name);
@@ -364,6 +486,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         routePending = false;
         dest = null;
         route = null;
+        routes = new ArrayList<>();
         window.clearRoute();
         window.hideBar();
     }
@@ -385,8 +508,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         spokenStage = 0;
         main.removeCallbacks(trafficRefresh);
         main.postDelayed(trafficRefresh, TRAFFIC_REFRESH_MS);
+        window.showRoute(route, false);   // just the chosen route: the others on offer go
         window.setGuiding(true);
         hud.setRoute(route);
+        matchIncidents();
         Location l = last;
         if (l != null) {
             showProgress(nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f));
@@ -400,7 +525,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         endNav();
         // Back to the overview of the same route, ready to start again.
         if (route != null && dest != null) {
-            window.showRoute(route, true);
+            window.showRoutes(routes, Math.max(0, routes.indexOf(route)), true);
             offer();
         } else {
             window.hideBar();
@@ -422,7 +547,17 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         requestRoute(false);
     }
 
+    @Override
+    public void chooseRoute(int index) {
+        if (navigating || index < 0 || index >= routes.size()) return;
+        route = routes.get(index);
+        window.showRoutes(routes, index, false);
+        offer();
+    }
+
     private void endNav() {
+        window.setSpeed(0, false);
+        window.setLanes(null);
         routeSeq++;
         routePending = false;
         navigating = false;
@@ -439,7 +574,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
                 : "  ·  live traffic";
         window.showOffer(dest.name, Geo.duration(route.durationSec) + "  ·  " + Geo.distance(route.totalDist)
                 + "  ·  arrive " + Geo.clock(System.currentTimeMillis() + (long) (route.durationSec * 1000))
-                + traffic);
+                + traffic + (route.hasTolls ? "  ·  tolls" : ""));
     }
 
     // ------------------------------------------------------------------ routes
@@ -457,11 +592,13 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         final int seq = ++routeSeq;
         final boolean tolls = prefs.avoidTolls(), highways = prefs.avoidHighways();
         final String key = prefs.tomtomKey();
+        // Before setting off, ask for a couple of other routes to choose between.
+        final int others = !navigating && !refresh ? 2 : 0;
         routePending = true;
         lastRouteRequest = SystemClock.elapsedRealtime();
         io.execute(() -> {
             try {
-                Nav.Route found = Router.find(from, to, tolls, highways, key);
+                final List<Nav.Route> found = Router.find(from, to, tolls, highways, key, others);
                 main.post(() -> {
                     if (seq == routeSeq) onRoute(found, refresh);
                 });
@@ -477,17 +614,21 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         });
     }
 
-    private void onRoute(Nav.Route found, boolean refresh) {
+    private void onRoute(List<Nav.Route> all, boolean refresh) {
+        Nav.Route found = all.get(0);
         routePending = false;
         // A traffic re-check that had to fall back to the router without traffic tells us nothing new,
         // and one that arrives after the car has left the route is already out of date.
         if (refresh && navigating && (!found.traffic || offRouteCount > 0)) return;
         route = found;
         if (!navigating) {
-            window.showRoute(found, true);
+            routes = all;
+            window.showRoutes(all, 0, true);
             offer();
             return;
         }
+        routes = new ArrayList<>();
+        routes.add(found);
         // A new route while driving: carry straight on with it.
         nav = new Nav(found);
         offRouteCount = 0;
@@ -496,6 +637,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         spokenStage = 0;
         window.showRoute(found, false);
         hud.setRoute(found);
+        matchIncidents();
         Location l = last;
         if (l != null) {
             Nav.Progress p = nav.update(l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : 0f);
@@ -509,6 +651,11 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     }
 
     private void showProgress(Nav.Progress p) {
+        Location l = last;
+        float kmh = l != null && l.hasSpeed() ? l.getSpeed() * 3.6f : 0f;
+        p.over = p.speedLimit > 0 && kmh > p.speedLimit + 3;
+        window.setSpeed(p.offRoute ? 0 : p.speedLimit, p.over);
+        window.setLanes(p.offRoute ? null : p.lanes);
         hud.setNav(p);
         if (p.offRoute) {
             window.showTurn(null, "Rerouting…", "Finding a new route");

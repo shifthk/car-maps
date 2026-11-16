@@ -93,4 +93,25 @@ final class Geo {
         if (km == Math.floor(km)) return (long) km + (km == 1 ? " kilometre" : " kilometres");
         return km + " kilometres";
     }
+
+    /**
+     * Whether it is dark at a place: true from shortly after sunset to shortly before sunrise. Works the
+     * sun's height out from the date, time and position with the usual low-precision formulas, which are
+     * good to a fraction of a degree.
+     */
+    static boolean isNight(double lat, double lng, long millis) {
+        double days = millis / 86400000.0 - 10957.5;   // days since noon UTC on 1 January 2000
+        double meanLng = Math.toRadians((280.460 + 0.9856474 * days) % 360);
+        double anomaly = Math.toRadians((357.528 + 0.9856003 * days) % 360);
+        double lambda = meanLng + Math.toRadians(1.915) * Math.sin(anomaly) + Math.toRadians(0.020) * Math.sin(2 * anomaly);
+        double tilt = Math.toRadians(23.439 - 0.0000004 * days);
+        double declination = Math.asin(Math.sin(tilt) * Math.sin(lambda));
+        double rightAscension = Math.atan2(Math.cos(tilt) * Math.sin(lambda), Math.cos(lambda));
+        double siderealHours = (18.697374558 + 24.06570982441908 * days) % 24;
+        double hourAngle = Math.toRadians(siderealHours * 15 + lng) - rightAscension;
+        double phi = Math.toRadians(lat);
+        double height = Math.asin(Math.sin(phi) * Math.sin(declination)
+                + Math.cos(phi) * Math.cos(declination) * Math.cos(hourAngle));
+        return Math.toDegrees(height) < -1.5;
+    }
 }

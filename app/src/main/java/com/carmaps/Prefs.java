@@ -25,8 +25,71 @@ final class Prefs {
     boolean avoidHighways() { return p.getBoolean("avoidHighways", false); }
     void setAvoidHighways(boolean v) { p.edit().putBoolean("avoidHighways", v).apply(); }
 
-    boolean darkMap() { return p.getBoolean("dark", false); }
-    void setDarkMap(boolean v) { p.edit().putBoolean("dark", v).apply(); }
+    /** Map colours: 0 light, 1 dark, 2 dark between sunset and sunrise, 3 follow the car's day/night theme. */
+    int theme() { return p.getInt("theme", p.getBoolean("dark", false) ? 1 : 2); }
+    void setTheme(int v) { p.edit().putInt("theme", v).apply(); }
+
+    /** While following the car, turn the map so the way ahead is up. */
+    boolean headingUp() { return p.getBoolean("headingUp", true); }
+    void setHeadingUp(boolean v) { p.edit().putBoolean("headingUp", v).apply(); }
+
+    /** Show TomTom's incidents on the map and warn about those on the route. */
+    boolean incidents() { return p.getBoolean("incidents", true); }
+    void setIncidents(boolean v) { p.edit().putBoolean("incidents", v).apply(); }
+
+    /** A saved place: slot is "home" or "work". Null if not set. */
+    Router.Dest place(String slot) {
+        try {
+            String s = p.getString("place_" + slot, "");
+            return s.isEmpty() ? null : Router.Dest.from(new org.json.JSONObject(s));
+        } catch (org.json.JSONException e) {
+            return null;
+        }
+    }
+
+    void setPlace(String slot, Router.Dest d) {
+        try {
+            if (d == null) p.edit().remove("place_" + slot).apply();
+            else p.edit().putString("place_" + slot, d.json().toString()).apply();
+        } catch (org.json.JSONException ignored) {
+            // nothing saved
+        }
+    }
+
+    /** Other saved places, oldest first. */
+    java.util.List<Router.Dest> favourites() {
+        java.util.List<Router.Dest> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(p.getString("favourites", "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(Router.Dest.from(a.getJSONObject(i)));
+        } catch (org.json.JSONException ignored) {
+            // a damaged list is just an empty one
+        }
+        return out;
+    }
+
+    static boolean same(Router.Dest a, Router.Dest b) {
+        return a != null && b != null && a.name.equals(b.name)
+                && Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lng - b.lng) < 1e-5;
+    }
+
+    boolean isFavourite(Router.Dest d) {
+        for (Router.Dest o : favourites()) if (same(o, d)) return true;
+        return false;
+    }
+
+    void setFavourite(Router.Dest d, boolean on) {
+        java.util.List<Router.Dest> list = favourites();
+        list.removeIf(o -> same(o, d));
+        if (on) list.add(d);
+        org.json.JSONArray a = new org.json.JSONArray();
+        try {
+            for (int i = Math.max(0, list.size() - 8); i < list.size(); i++) a.put(list.get(i).json());
+        } catch (org.json.JSONException ignored) {
+            return;
+        }
+        p.edit().putString("favourites", a.toString()).apply();
+    }
 
     /** The user's own TomTom API key; empty for none (then there is no traffic anywhere in the app). */
     String tomtomKey() { return p.getString("tomtomKey", ""); }

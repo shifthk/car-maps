@@ -124,7 +124,9 @@ public class MainActivity extends Activity {
         // ---- map
         heading("Guidance");
         toggle("Start with the car", prefs.startOnBoot(), prefs::setStartOnBoot);
-        toggle("Dark map", prefs.darkMap(), prefs::setDarkMap);
+        choice("Map colours", new String[]{"Light", "Dark", "Dark from sunset to sunrise",
+                "Follow the car's day and night theme"}, prefs.theme(), prefs::setTheme);
+        toggle("Turn the map to face the way ahead while following the car", prefs.headingUp(), prefs::setHeadingUp);
         toggle("Spoken directions", prefs.voice(), prefs::setVoice);
         toggle("Avoid tolls", prefs.avoidTolls(), prefs::setAvoidTolls);
         toggle("Avoid highways", prefs.avoidHighways(), prefs::setAvoidHighways);
@@ -162,6 +164,7 @@ public class MainActivity extends Activity {
             }).start();
         }));
         toggle("Show traffic on the map", prefs.traffic(), prefs::setTraffic);
+        toggle("Show incidents on the map and warn about those on the route", prefs.incidents(), prefs::setIncidents);
         root.addView(note("TomTom requests this month, against the free monthly allowance:"));
         usage = text("", 15, false);
         usage.setTextColor(0xFFB6C0CA);

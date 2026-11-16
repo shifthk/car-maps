@@ -27,7 +27,7 @@ final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
     private static final String SEARCH = "https://photon.komoot.io/api/";
-    private static final String AGENT = "CarMaps/2.2 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.7 (Android; +https://github.com/shifthk/car-maps)";
     private static final String TOMTOM = "https://api.tomtom.com/";
 
     /** How the last TomTom route request went, for the settings screen. */
@@ -36,29 +36,66 @@ final class Router {
     private Router() {
     }
 
+    /** An error answer from a server, with its HTTP status. */
+    static final class HttpError extends IOException {
+        final int code;
+
+        HttpError(int code, String message) {
+            super(message);
+            this.code = code;
+        }
+    }
+
     /**
-     * The best driving route: from TomTom, with live traffic, when the user has given a key; otherwise,
-     * or if TomTom fails, from the OpenStreetMap router (no traffic).
+     * Driving routes, best first: from TomTom, with live traffic, when the user has given a key;
+     * otherwise, or if TomTom fails, from the OpenStreetMap router (no traffic).
+     *
+     * @param alternatives how many other routes to ask for besides the best one
      */
-    static Nav.Route find(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String tomtomKey)
-            throws IOException, JSONException {
+    static List<Nav.Route> find(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String tomtomKey,
+                                int alternatives) throws IOException, JSONException {
         if (!tomtomKey.isEmpty()) {
             try {
-                Nav.Route r = Nav.Route.parseTomTom(tomtom(from, to, avoidTolls, avoidHighways, tomtomKey));
+                JSONArray found;
+                try {
+                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, true);
+                } catch (HttpError e) {
+                    if (e.code != 400) throw e;
+                    // TomTom turned down one of the extras (tolls, limits, lanes): ask for the plain route.
+                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, false);
+                }
+                List<Nav.Route> out = new ArrayList<>();
+                for (int i = 0; i < found.length(); i++) {
+                    try {
+                        out.add(Nav.Route.parseTomTom(found.getJSONObject(i)));
+                    } catch (JSONException e) {
+                        if (i == 0) throw e;   // an alternative that can't be read is just left out
+                    }
+                }
+                Nav.Route r = out.get(0);
                 trafficStatus = "Last route came from TomTom with live traffic"
                         + (r.trafficDelaySec >= 60 ? " (" + Geo.duration(r.trafficDelaySec) + " delay)" : "");
-                return r;
+                return out;
             } catch (IOException | JSONException e) {
                 String why = e instanceof JSONException ? "unexpected answer (" + e.getMessage() + ")" : e.getMessage();
                 trafficStatus = "TomTom route failed: " + why + " Used the OpenStreetMap router instead.";
             }
         }
-        return Nav.Route.parse(route(from, to, avoidTolls, avoidHighways));
+        List<Nav.Route> out = new ArrayList<>();
+        List<JSONObject> trips = route(from, to, avoidTolls, avoidHighways, alternatives);
+        for (int i = 0; i < trips.size(); i++) {
+            try {
+                out.add(Nav.Route.parse(trips.get(i)));
+            } catch (JSONException e) {
+                if (i == 0) throw e;
+            }
+        }
+        return out;
     }
 
-    /** @return the first entry of "routes" from TomTom's Calculate Route, with text instructions */
-    private static JSONObject tomtom(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String key)
-            throws IOException, JSONException {
+    /** @return "routes" from TomTom's Calculate Route, with text instructions */
+    private static JSONArray tomtom(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String key,
+                                    int alternatives, boolean extras) throws IOException, JSONException {
         StringBuilder url = new StringBuilder(TOMTOM).append(String.format(Locale.US,
                 "routing/1/calculateRoute/%.6f,%.6f:%.6f,%.6f/json", from.getLatitude(), from.getLongitude(),
                 to.lat, to.lng));
@@ -67,6 +104,9 @@ final class Router {
                 .append(language());
         if (avoidTolls) url.append("&avoid=tollRoads");
         if (avoidHighways) url.append("&avoid=motorways");
+        if (alternatives > 0) url.append("&maxAlternatives=").append(alternatives);
+        // Which stretches are tolled, what the speed limits are, and which lanes to be in.
+        if (extras) url.append("&sectionType=toll&sectionType=speedLimit&sectionType=lanes");
         if (from.hasBearing() && from.hasSpeed() && from.getSpeed() > 3f) {
             url.append("&vehicleHeading=").append(Math.round(from.getBearing()) % 360);
         }
@@ -74,7 +114,72 @@ final class Router {
         Usage.add(Usage.ROUTE);
         JSONArray routes = new JSONObject(answer).optJSONArray("routes");
         if (routes == null || routes.length() == 0) throw new IOException("No route found.");
-        return routes.getJSONObject(0);
+        return routes;
+    }
+
+    /** Something on the road that TomTom is reporting: a crash, roadworks, a closure. */
+    static final class Incident {
+        String id = "";
+        /** TomTom's icon category: 1 accident, 7 lane closed, 8 road closed, 9 roadworks and so on. */
+        int category;
+        /** Where its marker goes. */
+        double lat, lng;
+        /** Its first and last points, as lat, lng, lat, lng, in the direction of the traffic it affects. */
+        double[] line = new double[0];
+        /** Metres along the route being followed, or -1 if it isn't on it. */
+        double routeDist = -1;
+    }
+
+    static String incidentName(int category) {
+        switch (category) {
+            case 1: return "Accident";
+            case 2: return "Fog";
+            case 3: return "Dangerous conditions";
+            case 4: return "Rain";
+            case 5: return "Ice";
+            case 7: return "Lane closed";
+            case 8: return "Road closed";
+            case 9: return "Roadworks";
+            case 10: return "Strong wind";
+            case 11: return "Flooding";
+            case 14: return "Broken down vehicle";
+            default: return "Incident";
+        }
+    }
+
+    /** Incidents within about 20 km of a place, from TomTom. Jams are left out: the traffic colours show those. */
+    static List<Incident> incidents(double lat, double lng, String key) throws IOException, JSONException {
+        String fields = "{incidents{type,geometry{type,coordinates},properties{id,iconCategory}}}";
+        String url = TOMTOM + "traffic/services/5/incidentDetails?key=" + URLEncoder.encode(key, "UTF-8")
+                + String.format(Locale.US, "&bbox=%.4f,%.4f,%.4f,%.4f", lng - 0.24, lat - 0.2, lng + 0.24, lat + 0.2)
+                + "&fields=" + URLEncoder.encode(fields, "UTF-8")
+                + "&language=en-GB&categoryFilter=1,3,5,7,8,9,11,14&timeValidityFilter=present";
+        String answer = http("GET", url, null);
+        Usage.add(Usage.INCIDENT);
+        JSONArray list = new JSONObject(answer).optJSONArray("incidents");
+        List<Incident> out = new ArrayList<>();
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject o = list.getJSONObject(i);
+            JSONObject g = o.optJSONObject("geometry");
+            JSONObject p = o.optJSONObject("properties");
+            JSONArray at = g == null ? null : g.optJSONArray("coordinates");
+            if (p == null || at == null || at.length() == 0) continue;
+            Incident inc = new Incident();
+            inc.id = p.optString("id", "i" + i);
+            inc.category = p.optInt("iconCategory");
+            if ("Point".equals(g.optString("type"))) {
+                if (at.length() < 2) continue;
+                inc.line = new double[]{at.getDouble(1), at.getDouble(0)};
+            } else {
+                JSONArray first = at.optJSONArray(0), last = at.optJSONArray(at.length() - 1);
+                if (first == null || last == null || first.length() < 2 || last.length() < 2) continue;
+                inc.line = new double[]{first.getDouble(1), first.getDouble(0), last.getDouble(1), last.getDouble(0)};
+            }
+            inc.lat = inc.line[0];
+            inc.lng = inc.line[1];
+            out.add(inc);
+        }
+        return out;
     }
 
     /** Tries a TomTom key by fetching one traffic tile. @return null if it works, otherwise what went wrong */
@@ -125,8 +230,8 @@ final class Router {
         }
     }
 
-    /** @return Valhalla's "trip" for the best driving route */
-    static JSONObject route(Location from, Dest to, boolean avoidTolls, boolean avoidHighways)
+    /** @return Valhalla's "trip" for the best driving route, followed by those of any alternatives */
+    static List<JSONObject> route(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, int alternatives)
             throws IOException, JSONException {
         JSONObject origin = new JSONObject().put("lat", from.getLatitude()).put("lon", from.getLongitude());
         // While moving, say which way the car is facing so the route doesn't start with a U-turn.
@@ -143,10 +248,18 @@ final class Router {
                 .put("costing_options", new JSONObject().put("auto", new JSONObject()
                         .put("use_tolls", avoidTolls ? 0 : 0.5)
                         .put("use_highways", avoidHighways ? 0 : 1)));
+        if (alternatives > 0) body.put("alternates", alternatives);
         JSONObject res = new JSONObject(http("POST", ROUTE, body.toString()));
         JSONObject trip = res.optJSONObject("trip");
         if (trip == null) throw new IOException("No route found");
-        return trip;
+        List<JSONObject> out = new ArrayList<>();
+        out.add(trip);
+        JSONArray others = res.optJSONArray("alternates");
+        for (int i = 0; others != null && i < others.length(); i++) {
+            JSONObject other = others.getJSONObject(i).optJSONObject("trip");
+            if (other != null) out.add(other);
+        }
+        return out;
     }
 
     /** How the last TomTom search went, for the settings screen. */
@@ -257,7 +370,7 @@ final class Router {
             c.setReadTimeout(20000);
             c.setRequestMethod(method);
             // The community services ask apps to say who they are; TomTom knows by the key.
-            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.2" : AGENT);
+            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.7" : AGENT);
             c.setRequestProperty("Accept", "application/json");
             if (body != null) {
                 c.setDoOutput(true);
@@ -284,7 +397,7 @@ final class Router {
                 } catch (JSONException ignored) {
                     // not JSON: keep the generic message
                 }
-                throw new IOException(message);
+                throw new HttpError(code, message);
             }
             return text;
         } finally {

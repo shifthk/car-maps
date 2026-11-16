@@ -35,6 +35,12 @@ final class Nav {
         boolean traffic;
         /** How much of {@link #durationSec} is delay from traffic. */
         double trafficDelaySec;
+        /** True if the router says some part of the route is tolled. */
+        boolean hasTolls;
+        /** Speed limits where known: each is {from metres, to metres, km/h} along the route. */
+        double[][] limits = new double[0][];
+        /** The stretches before junctions where the router says which lanes to be in. */
+        final List<LaneSpot> lanes = new ArrayList<>();
 
         /** @param r one entry of "routes" in a TomTom Calculate Route response asked for with text instructions */
         static Route parseTomTom(JSONObject r) throws JSONException {
@@ -64,6 +70,41 @@ final class Nav {
             double total = summary.getDouble("travelTimeInSeconds");
             route.trafficDelaySec = summary.optDouble("trafficDelayInSeconds", 0);
             route.traffic = true;
+
+            JSONArray sections = r.optJSONArray("sections");
+            List<double[]> limits = new ArrayList<>();
+            for (int i = 0; sections != null && i < sections.length(); i++) {
+                JSONObject sec = sections.getJSONObject(i);
+                String type = sec.optString("sectionType");
+                int a = Math.max(0, Math.min(n - 1, sec.optInt("startPointIndex")));
+                int b = Math.max(a, Math.min(n - 1, sec.optInt("endPointIndex")));
+                if ("TOLL".equals(type) || "TOLL_ROAD".equals(type)) {
+                    route.hasTolls = true;
+                } else if ("SPEED_LIMIT".equals(type) && sec.optInt("maxSpeedLimitInKmh") > 0) {
+                    limits.add(new double[]{route.cum[a], route.cum[b], sec.optInt("maxSpeedLimitInKmh")});
+                } else if ("LANES".equals(type)) {
+                    JSONArray list = sec.optJSONArray("lanes");
+                    if (list == null || list.length() < 2 || list.length() > 10) continue;
+                    LaneSpot spot = new LaneSpot();
+                    spot.startDist = route.cum[a];
+                    spot.endDist = route.cum[b];
+                    spot.arrows = new String[list.length()];
+                    spot.follow = new boolean[list.length()];
+                    boolean any = false;
+                    for (int k = 0; k < list.length(); k++) {
+                        JSONObject lane = list.getJSONObject(k);
+                        JSONArray dirs = lane.optJSONArray("directions");
+                        String follow = lane.optString("follow");
+                        spot.follow[k] = !follow.isEmpty();
+                        any |= spot.follow[k];
+                        spot.arrows[k] = !follow.isEmpty() ? follow
+                                : dirs != null && dirs.length() > 0 ? dirs.optString(0) : "STRAIGHT";
+                    }
+                    // Only worth showing where it says which lanes to take.
+                    if (any) route.lanes.add(spot);
+                }
+            }
+            route.limits = limits.toArray(new double[0][]);
 
             JSONObject guidance = r.optJSONObject("guidance");
             JSONArray list = guidance == null ? null : guidance.optJSONArray("instructions");
@@ -176,6 +217,7 @@ final class Nav {
                 step.text = m.optString("instruction");
                 step.spoken = m.optString("verbal_pre_transition_instruction", step.text);
                 step.seconds = m.optDouble("time", 0);
+                if (m.optBoolean("toll")) route.hasTolls = true;
                 int begin = Math.max(0, Math.min(n - 1, m.optInt("begin_shape_index")));
                 int end = Math.max(begin, Math.min(n - 1, m.optInt("end_shape_index")));
                 step.startDist = route.cum[begin];
@@ -230,6 +272,28 @@ final class Nav {
         double remainDist;
         double remainSec;
         long eta;
+        /** The limit on this stretch in km/h, or 0 if not known; {@link #over} is filled in by the service. */
+        int speedLimit;
+        boolean over;
+        /** Which lanes to be in for the junction coming up, or null. */
+        LaneSpot lanes;
+    }
+
+    /** One stretch of road with marked lanes: an arrow per lane, left to right, and which ones to take. */
+    static final class LaneSpot {
+        double startDist, endDist;
+        String[] arrows;
+        boolean[] follow;
+    }
+
+    /** How far before a lane stretch its arrows start to show. */
+    private static final double LANES_AHEAD_M = 400;
+
+    /** @return {metres along the route, metres away from it} for the point of the route nearest to a place */
+    static double[] offsetOf(Route r, double lat, double lng) {
+        double[] best = nearest(r, lat, lng, Math.cos(Math.toRadians(lat)), 0, r.lat.length - 2);
+        int seg = (int) best[0];
+        return new double[]{r.cum[seg] + best[2] * (r.cum[seg + 1] - r.cum[seg]), best[1]};
     }
 
     private final Route route;
@@ -286,6 +350,18 @@ final class Nav {
         double stepLeft = stepLen > 0 ? Math.max(0, Math.min(1, (current.endDist - p.along) / stepLen)) : 0;
         p.remainSec = current.seconds * stepLeft + r.secondsAfter[si];
         p.eta = System.currentTimeMillis() + (long) (p.remainSec * 1000);
+        for (double[] limit : r.limits) {
+            if (p.along >= limit[0] && p.along < limit[1]) {
+                p.speedLimit = (int) limit[2];
+                break;
+            }
+        }
+        for (LaneSpot spot : r.lanes) {
+            if (spot.endDist > p.along && spot.startDist - p.along < LANES_AHEAD_M) {
+                p.lanes = spot;
+                break;
+            }
+        }
 
         if (si + 1 < count) {
             Step next = r.steps.get(si + 1);

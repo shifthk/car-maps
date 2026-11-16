@@ -489,6 +489,10 @@ final class Hud {
         private final TextPaint big = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint small = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint foot = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        /** Lanes not to take, the speed limit's ring, and its number. */
+        private final Paint dim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint number = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         InfoView(Context c) {
             super(c);
@@ -524,9 +528,36 @@ final class Hud {
             small.setTextSize(h * 0.15f);
             c.drawText(TextUtils.ellipsize(t, small, Math.max(10, w - textLeft), TextUtils.TruncateAt.END).toString(),
                     textLeft, h * 0.58f, small);
-            foot.setTextSize(h * 0.17f);
-            c.drawText(TextUtils.ellipsize(f, foot, w - h * 0.06f, TextUtils.TruncateAt.END).toString(),
-                    h * 0.06f, h * 0.92f, foot);
+            Nav.Progress p = progress;
+            boolean live = navigating && p != null && !p.offRoute;
+            Nav.LaneSpot spot = live ? p.lanes : null;
+            int limit = live ? p.speedLimit : testing && !navigating ? 60 : 0;
+            boolean over = live && p.over;
+
+            if (spot != null) {
+                // Coming up to a junction with marked lanes: the lanes to be in take the bottom line.
+                dim.setColor(0xFF56606A);
+                float cell = Math.min(h * 0.36f, (w - h * 0.06f) / spot.arrows.length);
+                Lanes.draw(c, spot, h * 0.06f, h - cell, cell, shape, dim);
+            } else {
+                foot.setTextSize(h * 0.17f);
+                c.drawText(TextUtils.ellipsize(f, foot, w - h * 0.06f, TextUtils.TruncateAt.END).toString(),
+                        h * 0.06f, h * 0.92f, foot);
+            }
+
+            if (limit > 0) {
+                // The speed limit, top right: a red ring, filled red once the car is over it.
+                float r = h * 0.17f, x = w - r - h * 0.02f, y = r + h * 0.03f;
+                ring.setColor(0xFFFF3B30);
+                ring.setStyle(over ? Paint.Style.FILL_AND_STROKE : Paint.Style.STROKE);
+                ring.setStrokeWidth(r * 0.22f);
+                c.drawCircle(x, y, r * 0.88f, ring);
+                number.setColor(0xFFFFFFFF);
+                number.setTextAlign(Paint.Align.CENTER);
+                number.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+                number.setTextSize(limit >= 100 ? r * 0.8f : r);
+                c.drawText(String.valueOf(limit), x, y - (number.ascent() + number.descent()) / 2f, number);
+            }
         }
     }
 

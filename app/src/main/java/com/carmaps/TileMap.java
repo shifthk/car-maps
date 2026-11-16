@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.2 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.7 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -138,7 +138,15 @@ final class TileMap extends View {
 
     private boolean haveCar;
     private double carX, carY, carFromX, carFromY, carToX, carToY;
-    private float carBearing;
+    private float carBearing, carBearingFrom, carBearingTo;
+    private boolean haveBearing;
+    /** Turn the map so the car's heading is up while following it. */
+    private boolean headingUp;
+    /** How the last drawing was turned (degrees) and where on the view the map's centre was put. */
+    private float rotation, ax, ay;
+    private double[][] altX, altY;
+    private double[] incX, incY;
+    private int[] incCat;
     private long carMovedAt;
 
     private double[] routeX, routeY;
@@ -159,8 +167,10 @@ final class TileMap extends View {
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
                 double world = worldSize();
-                cx += dx / world;
-                cy += dy / world;
+                // If the map is turned, a drag across the screen is a drag at an angle across the map.
+                double r = Math.toRadians(rotation);
+                cx += (dx * Math.cos(r) - dy * Math.sin(r)) / world;
+                cy += (dx * Math.sin(r) + dy * Math.cos(r)) / world;
                 moved();
                 return true;
             }
@@ -182,7 +192,10 @@ final class TileMap extends View {
             public void onLongPress(MotionEvent e) {
                 if (listener == null || pinch.isInProgress()) return;
                 double world = worldSize();
-                double x = cx + (e.getX() - getWidth() / 2f) / world, y = cy + (e.getY() - getHeight() / 2f) / world;
+                double r = Math.toRadians(rotation);
+                double sx = e.getX() - ax, sy = e.getY() - ay;
+                double x = cx + (sx * Math.cos(r) - sy * Math.sin(r)) / world;
+                double y = cy + (sx * Math.sin(r) + sy * Math.cos(r)) / world;
                 listener.onLongPress(latOf(y), x * 360 - 180);
             }
         });
@@ -278,7 +291,10 @@ final class TileMap extends View {
             carToX = x;
             carToY = y;
         }
-        carBearing = bearing;
+        carBearingFrom = haveBearing ? carBearing : bearing;
+        carBearingTo = bearing;
+        if (!haveBearing) carBearing = bearing;
+        haveBearing = true;
         carMovedAt = SystemClock.uptimeMillis();
         invalidate();
     }
@@ -324,6 +340,46 @@ final class TileMap extends View {
 
     void clearRoute() {
         routeX = routeY = null;
+        altX = altY = null;
+        invalidate();
+    }
+
+    /** Other routes on offer, drawn in grey under the chosen one; null for none. */
+    void setAlternates(java.util.List<double[]> lats, java.util.List<double[]> lngs) {
+        if (lats == null || lats.isEmpty()) {
+            altX = altY = null;
+        } else {
+            altX = new double[lats.size()][];
+            altY = new double[lats.size()][];
+            for (int k = 0; k < lats.size(); k++) {
+                double[] lat = lats.get(k), lng = lngs.get(k);
+                altX[k] = new double[lat.length];
+                altY[k] = new double[lat.length];
+                for (int i = 0; i < lat.length; i++) {
+                    altX[k][i] = xOf(lng[i]);
+                    altY[k][i] = yOf(lat[i]);
+                }
+            }
+        }
+        invalidate();
+    }
+
+    /** Markers for things on the road; category is TomTom's icon category. */
+    void setIncidents(double[] lat, double[] lng, int[] category) {
+        int n = lat == null ? 0 : lat.length;
+        incX = new double[n];
+        incY = new double[n];
+        incCat = category;
+        for (int i = 0; i < n; i++) {
+            incX[i] = xOf(lng[i]);
+            incY[i] = yOf(lat[i]);
+        }
+        invalidate();
+    }
+
+    void setHeadingUp(boolean on) {
+        if (headingUp == on) return;
+        headingUp = on;
         invalidate();
     }
 
@@ -431,12 +487,14 @@ final class TileMap extends View {
         prefix = tomtom ? (dark ? "n/" : "m/") : "";
         tilePaint.setColorFilter(dark && !tomtom ? darkFilter : null);
 
-        // Glide the car from its last position to the new one over the second between GPS fixes.
+        // Glide the car from its last position and heading to the new ones over the second between GPS fixes.
         boolean gliding = false;
         if (haveCar) {
             float t = Math.min(1f, (SystemClock.uptimeMillis() - carMovedAt) / (float) GLIDE_MS);
             carX = carFromX + (carToX - carFromX) * t;
             carY = carFromY + (carToY - carFromY) * t;
+            float turn = ((carBearingTo - carBearingFrom) % 360 + 540) % 360 - 180;   // the short way round
+            carBearing = carBearingFrom + turn * t;
             gliding = t < 1f;
             if (follow) {
                 cx = carX;
@@ -444,20 +502,33 @@ final class TileMap extends View {
             }
         }
 
+        // While following the car the map can be turned so the way ahead is up, with the car low in
+        // the view so more of the road ahead shows. Otherwise north is up and the centre is the centre.
+        boolean turned = headingUp && follow && haveCar;
+        rotation = turned ? carBearing : 0f;
+        ax = w / 2f;
+        ay = turned ? h * 0.68f : h / 2f;
+
         final Set<String> needed = ConcurrentHashMap.newKeySet();
         visible = needed;
         int z = Math.max(0, Math.min(MAX_ZOOM, (int) Math.floor(zoom + 0.5)));
         int n = 1 << z;
         double world = worldSize();
         double size = world / n;
-        int x0 = (int) Math.floor((cx - w / 2.0 / world) * n), x1 = (int) Math.floor((cx + w / 2.0 / world) * n);
-        int y0 = Math.max(0, (int) Math.floor((cy - h / 2.0 / world) * n));
-        int y1 = Math.min(n - 1, (int) Math.floor((cy + h / 2.0 / world) * n));
+        // A turned map needs tiles out to the furthest corner in every direction.
+        double reachX = w / 2.0, reachY = h / 2.0;
+        if (turned) reachX = reachY = Math.hypot(Math.max(ax, w - ax), Math.max(ay, h - ay));
+        int x0 = (int) Math.floor((cx - reachX / world) * n), x1 = (int) Math.floor((cx + reachX / world) * n);
+        int y0 = Math.max(0, (int) Math.floor((cy - reachY / world) * n));
+        int y1 = Math.min(n - 1, (int) Math.floor((cy + reachY / world) * n));
+
+        int turnedBack = c.save();
+        c.rotate(-rotation, ax, ay);
         for (int ty = y0; ty <= y1; ty++) {
             for (int tx = x0; tx <= x1; tx++) {
                 int wrapped = ((tx % n) + n) % n;
-                float left = (float) ((tx / (double) n - cx) * world + w / 2.0);
-                float top = (float) ((ty / (double) n - cy) * world + h / 2.0);
+                float left = (float) ((tx / (double) n - cx) * world + ax);
+                float top = (float) ((ty / (double) n - cy) * world + ay);
                 // A hair of overlap hides the seams between tiles.
                 dst.set(left, top, (float) (left + size) + 0.5f, (float) (top + size) + 0.5f);
                 drawTile(c, z, wrapped, ty);
@@ -465,9 +536,21 @@ final class TileMap extends View {
             }
         }
 
-        drawRoute(c, w, h, world);
-        if (havePin) drawPin(c, (float) ((pinX - cx) * world + w / 2.0), (float) ((pinY - cy) * world + h / 2.0));
-        if (haveCar) drawCar(c, (float) ((carX - cx) * world + w / 2.0), (float) ((carY - cy) * world + h / 2.0));
+        double[][] ox = altX, oy = altY;
+        if (ox != null) {
+            for (int k = 0; k < ox.length; k++) drawLine(c, ox[k], oy[k], world, 0xFF5E6873, 0xFFAEB7C0);
+        }
+        drawLine(c, routeX, routeY, world, 0xFF0B3D91, 0xFF4C9BFF);
+        drawIncidents(c, world);
+        if (havePin) {
+            float px = (float) ((pinX - cx) * world + ax), py = (float) ((pinY - cy) * world + ay);
+            int upright = c.save();
+            c.rotate(rotation, px, py);
+            drawPin(c, px, py);
+            c.restoreToCount(upright);
+        }
+        if (haveCar) drawCar(c, (float) ((carX - cx) * world + ax), (float) ((carY - cy) * world + ay));
+        c.restoreToCount(turnedBack);
 
         paint.setStyle(Paint.Style.FILL);
         paint.setTextSize(11 * density);
@@ -482,6 +565,42 @@ final class TileMap extends View {
         paint.setTextAlign(Paint.Align.LEFT);
 
         if (gliding) postInvalidateOnAnimation();
+    }
+
+    /** Small round markers: red for crashes and closures, orange for roadworks, yellow for the rest. */
+    private void drawIncidents(Canvas c, double world) {
+        double[] xs = incX, ys = incY;
+        int[] cat = incCat;
+        if (xs == null || cat == null || zoom < 10) return;
+        float r = 11 * density;
+        float reach = (float) Math.hypot(getWidth(), getHeight());
+        for (int i = 0; i < xs.length && i < cat.length; i++) {
+            float x = (float) ((xs[i] - cx) * world + ax), y = (float) ((ys[i] - cy) * world + ay);
+            if (Math.abs(x - ax) > reach || Math.abs(y - ay) > reach) continue;
+            int upright = c.save();
+            c.rotate(rotation, x, y);
+            boolean closed = cat[i] == 8;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(closed || cat[i] == 1 || cat[i] == 14 ? 0xFFD93025
+                    : cat[i] == 9 || cat[i] == 7 ? 0xFFF57C00 : 0xFFF9AB00);
+            c.drawCircle(x, y, r, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2 * density);
+            paint.setColor(0xFFFFFFFF);
+            c.drawCircle(x, y, r, paint);
+            paint.setStyle(Paint.Style.FILL);
+            if (closed) {
+                c.drawRect(x - r * 0.6f, y - r * 0.18f, x + r * 0.6f, y + r * 0.18f, paint);
+            } else {
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setFakeBoldText(true);
+                paint.setTextSize(r * 1.5f);
+                c.drawText("!", x, y + r * 0.52f, paint);
+                paint.setFakeBoldText(false);
+                paint.setTextAlign(Paint.Align.LEFT);
+            }
+            c.restoreToCount(upright);
+        }
     }
 
     private void drawTile(Canvas c, int z, int x, int y) {
@@ -574,13 +693,13 @@ final class TileMap extends View {
         }
     }
 
-    private void drawRoute(Canvas c, int w, int h, double world) {
-        double[] xs = routeX, ys = routeY;
+    /** A route as a line with a darker edge. */
+    private void drawLine(Canvas c, double[] xs, double[] ys, double world, int edge, int fill) {
         if (xs == null || xs.length < 2) return;
         path.rewind();
         float lastX = 0, lastY = 0;
         for (int i = 0; i < xs.length; i++) {
-            float x = (float) ((xs[i] - cx) * world + w / 2.0), y = (float) ((ys[i] - cy) * world + h / 2.0);
+            float x = (float) ((xs[i] - cx) * world + ax), y = (float) ((ys[i] - cy) * world + ay);
             if (i == 0) path.moveTo(x, y);
             else if (Math.abs(x - lastX) + Math.abs(y - lastY) >= 1.5f || i == xs.length - 1) path.lineTo(x, y);
             else continue;
@@ -591,10 +710,10 @@ final class TileMap extends View {
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setStrokeJoin(Paint.Join.ROUND);
         paint.setStrokeWidth(9 * density);
-        paint.setColor(0xFF0B3D91);
+        paint.setColor(edge);
         c.drawPath(path, paint);
         paint.setStrokeWidth(5.5f * density);
-        paint.setColor(0xFF4C9BFF);
+        paint.setColor(fill);
         c.drawPath(path, paint);
     }
 

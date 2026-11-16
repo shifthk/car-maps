@@ -15,11 +15,11 @@ import java.util.TimeZone;
  */
 final class Usage {
 
-    static final int MAP = 0, TRAFFIC = 1, ROUTE = 2, SEARCH = 3;
-    private static final String[] KEYS = {"map", "traffic", "route", "search"};
-    private static final String[] NAMES = {"Map tiles", "Traffic tiles", "Routes", "Searches"};
+    static final int MAP = 0, TRAFFIC = 1, ROUTE = 2, SEARCH = 3, INCIDENT = 4;
+    private static final String[] KEYS = {"map", "traffic", "route", "search", "incident"};
+    private static final String[] NAMES = {"Map tiles", "Traffic tiles", "Routes", "Searches", "Incident checks"};
     /** TomTom's free requests per month for each kind, from its pricing page in November 2026. */
-    private static final int[] FREE = {200000, 200000, 20000, 2500};
+    private static final int[] FREE = {200000, 200000, 20000, 2500, 2500};
     private static final long SAVE_EVERY_MS = 20000;
 
     private static SharedPreferences store;
