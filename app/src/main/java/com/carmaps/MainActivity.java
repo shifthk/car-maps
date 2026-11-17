@@ -166,6 +166,9 @@ public class MainActivity extends Activity {
             }).start();
         }));
         toggle("Show traffic on the map", prefs.traffic(), prefs::setTraffic);
+        choice("Update the traffic on the map (less often uses less of the TomTom allowance)",
+                new String[]{"Every 2 minutes", "Every 5 minutes", "Every 10 minutes", "Every 15 minutes",
+                        "Never: only load traffic for new areas"}, prefs.trafficRefresh(), prefs::setTrafficRefresh);
         toggle("Show incidents on the map and warn about those on the route", prefs.incidents(), prefs::setIncidents);
         root.addView(note("TomTom requests this month, against the free monthly allowance:"));
         usage = text("", 15, false);

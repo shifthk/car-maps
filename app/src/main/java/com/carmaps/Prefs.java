@@ -99,6 +99,16 @@ final class Prefs {
     boolean traffic() { return p.getBoolean("traffic", true); }
     void setTraffic(boolean v) { p.edit().putBoolean("traffic", v).apply(); }
 
+    /** Minutes before a traffic tile is fetched again; 0 = never (only new areas are fetched). */
+    static final int[] TRAFFIC_MINUTES = {2, 5, 10, 15, 0};
+    int trafficRefresh() { return Math.max(0, Math.min(TRAFFIC_MINUTES.length - 1, p.getInt("trafficRefresh", 1))); }
+    void setTrafficRefresh(int v) { p.edit().putInt("trafficRefresh", v).apply(); }
+    /** @return how long a traffic tile stays fresh, or Long.MAX_VALUE for never re-fetching */
+    long trafficFreshMs() {
+        int m = TRAFFIC_MINUTES[trafficRefresh()];
+        return m == 0 ? Long.MAX_VALUE : m * 60_000L;
+    }
+
     long lastUpdateCheck() { return p.getLong("updateCheck", 0); }
     void setLastUpdateCheck(long v) { p.edit().putLong("updateCheck", v).apply(); }
 

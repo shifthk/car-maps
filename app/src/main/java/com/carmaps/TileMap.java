@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.14 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.15 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -63,7 +63,9 @@ final class TileMap extends View {
     private static final long GLIDE_MS = 1000;
     /** TomTom's traffic flow tiles: see-through, coloured by how slow each road is against its free flow. */
     private static final String TRAFFIC = "https://api.tomtom.com/traffic/map/4/tile/flow/relative0/";
-    private static final long TRAFFIC_FRESH_MS = 2 * 60 * 1000, TRAFFIC_BLOCK_MS = 5 * 60 * 1000;
+    private static final long TRAFFIC_BLOCK_MS = 5 * 60 * 1000;
+    /** How long a traffic tile is used before it is fetched again (Long.MAX_VALUE: never). */
+    private volatile long trafficFreshMs = 5 * 60 * 1000;
     private static final int TRAFFIC_MIN_ZOOM = 7;
 
     /** How the traffic layer is doing, for the settings screen. */
@@ -107,7 +109,9 @@ final class TileMap extends View {
         @Override
         public void run() {
             if (trafficKey == null || released) return;
-            invalidate();   // drawing notices tiles that have gone stale and asks for them again
+            // Drawing notices tiles that have gone stale and asks for them again. A hidden map
+            // (the window shrunk to its button) isn't drawn, so it asks for nothing.
+            if (isShown()) invalidate();
             main.postDelayed(this, 60000);
         }
     };
@@ -267,6 +271,11 @@ final class TileMap extends View {
         mapBlockedUntil = 0;
         mapStatus = key == null ? "" : "Map: TomTom";
         invalidate();
+    }
+
+    /** @param ms how long a traffic tile is used before being fetched again; Long.MAX_VALUE for never */
+    void setTrafficFresh(long ms) {
+        trafficFreshMs = ms;
     }
 
     /** Lays live traffic over the map. @param key the user's TomTom key, or null to turn the layer off */
@@ -551,7 +560,11 @@ final class TileMap extends View {
                 // A hair of overlap hides the seams between tiles.
                 dst.set(left, top, (float) (left + size) + 0.5f, (float) (top + size) + 0.5f);
                 drawTile(c, z, wrapped, ty);
-                if (trafficKey != null && !hudStyle && z >= TRAFFIC_MIN_ZOOM) drawTraffic(c, z, wrapped, ty);
+                // Traffic only for tiles that can actually be seen: a turned map loads map tiles
+                // out to its corners (cached for days), but traffic there would be wasted requests.
+                if (trafficKey != null && !hudStyle && z >= TRAFFIC_MIN_ZOOM && onScreen(w, h)) {
+                    drawTraffic(c, z, wrapped, ty);
+                }
             }
         }
 
@@ -654,6 +667,39 @@ final class TileMap extends View {
         }
     }
 
+    /**
+     * Whether the tile in {@link #dst} (map coordinates, before the map is turned about ax, ay)
+     * overlaps the w x h view once turned: a separating-axis test of the two rectangles.
+     */
+    private boolean onScreen(int w, int h) {
+        if (rotation == 0f) return dst.right > 0 && dst.left < w && dst.bottom > 0 && dst.top < h;
+        double a = Math.toRadians(-rotation), cos = Math.cos(a), sin = Math.sin(a);
+        float[] tx = {dst.left, dst.right, dst.right, dst.left}, ty = {dst.top, dst.top, dst.bottom, dst.bottom};
+        // The tile's corners on screen.
+        double[] sx = new double[4], sy = new double[4];
+        for (int i = 0; i < 4; i++) {
+            double dx = tx[i] - ax, dy = ty[i] - ay;
+            sx[i] = ax + dx * cos - dy * sin;
+            sy[i] = ay + dx * sin + dy * cos;
+        }
+        double[] vx = {0, w, w, 0}, vy = {0, 0, h, h};
+        // Axes: the screen's two, then the turned tile's two.
+        double[][] axes = {{1, 0}, {0, 1}, {cos, sin}, {-sin, cos}};
+        for (double[] ax2 : axes) {
+            double tMin = Double.MAX_VALUE, tMax = -Double.MAX_VALUE, vMin = Double.MAX_VALUE, vMax = -Double.MAX_VALUE;
+            for (int i = 0; i < 4; i++) {
+                double p = sx[i] * ax2[0] + sy[i] * ax2[1];
+                tMin = Math.min(tMin, p);
+                tMax = Math.max(tMax, p);
+                double q = vx[i] * ax2[0] + vy[i] * ax2[1];
+                vMin = Math.min(vMin, q);
+                vMax = Math.max(vMax, q);
+            }
+            if (tMax <= vMin || vMax <= tMin) return false;
+        }
+        return true;
+    }
+
     private void drawTraffic(Canvas c, int z, int x, int y) {
         String key = "t/" + z + "/" + x + "/" + y;
         visible.add(key);
@@ -662,7 +708,7 @@ final class TileMap extends View {
         Long at = trafficAt.get(key);
         long now = SystemClock.elapsedRealtime();
         // A stale tile stays on screen until its replacement arrives.
-        if (b == null || at == null || now - at > TRAFFIC_FRESH_MS) requestTraffic(key, z + "/" + x + "/" + y, now);
+        if (b == null || at == null || now - at > trafficFreshMs) requestTraffic(key, z + "/" + x + "/" + y, now);
     }
 
     private void requestTraffic(String key, String tile, long now) {

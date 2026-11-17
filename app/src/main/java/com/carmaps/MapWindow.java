@@ -117,8 +117,8 @@ final class MapWindow implements TileMap.Listener {
         this.wm = wm;
         this.prefs = prefs;
         this.host = host;
-        iconSize = dp(56);
-        inset = dp(18);
+        iconSize = dp(80);
+        inset = dp(26);
         minW = dp(320);
         minH = dp(300);
         collapsed = prefs.collapsed();
@@ -151,7 +151,7 @@ final class MapWindow implements TileMap.Listener {
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setBackgroundColor(0xFF262B31);
-        top.setPadding(dp(16), 0, dp(40), 0);   // clear of the round button on the right
+        top.setPadding(dp(16), 0, dp(58), 0);   // clear of the round button on the right
         search = new EditText(ui);
         search.setHint("Search for a place");
         search.setHintTextColor(0xFF9AA4AE);
@@ -400,6 +400,7 @@ final class MapWindow implements TileMap.Listener {
         boolean on = !key.isEmpty() && prefs.traffic();
         map.setMap(key.isEmpty() ? null : key);
         map.setTraffic(on ? key : null);
+        map.setTrafficFresh(prefs.trafficFreshMs());
         trafficButton.setVisibility(key.isEmpty() ? View.GONE : View.VISIBLE);
         trafficButton.setAlpha(on ? 1f : 0.4f);
         boolean avoid = prefs.avoidTolls();
