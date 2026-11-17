@@ -53,6 +53,23 @@ final class Usage {
         if (store != null && dirty) save();
     }
 
+    static int kinds() {
+        return KEYS.length;
+    }
+
+    static String name(int kind) {
+        return NAMES[kind];
+    }
+
+    static int free(int kind) {
+        return FREE[kind];
+    }
+
+    static synchronized int count(int kind) {
+        if (store != null) roll();
+        return counts[kind];
+    }
+
     /** A few lines for the settings screen. */
     static synchronized String describe() {
         if (store == null) return "";

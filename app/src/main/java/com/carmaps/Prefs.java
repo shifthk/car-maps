@@ -99,6 +99,10 @@ final class Prefs {
     boolean traffic() { return p.getBoolean("traffic", true); }
     void setTraffic(boolean v) { p.edit().putBoolean("traffic", v).apply(); }
 
+    /** The settings screen's last open tab. */
+    int settingsTab() { return p.getInt("settingsTab", 0); }
+    void setSettingsTab(int v) { p.edit().putInt("settingsTab", v).apply(); }
+
     /** Minutes before a traffic tile is fetched again; 0 = never (only new areas are fetched). */
     static final int[] TRAFFIC_MINUTES = {2, 5, 10, 15, 0};
     int trafficRefresh() { return Math.max(0, Math.min(TRAFFIC_MINUTES.length - 1, p.getInt("trafficRefresh", 1))); }
