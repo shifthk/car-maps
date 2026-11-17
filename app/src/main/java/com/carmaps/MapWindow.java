@@ -1050,12 +1050,10 @@ final class MapWindow implements TileMap.Listener {
 
         IconButton(Context c) {
             super(c);
-            setOutlineProvider(new ViewOutlineProvider() {
-                @Override
-                public void getOutline(View view, Outline outline) {
-                    outline.setOval(0, 0, view.getWidth(), view.getHeight());
-                }
-            });
+            // No outline, so no shadow: its elevation only keeps it above the map. When the map is
+            // hidden the window is exactly the button's size, so a shadow would be cut off square
+            // at the window's edge and show as dark corners around the circle.
+            setOutlineProvider(null);
         }
 
         void setActive(boolean on) {
@@ -1074,13 +1072,15 @@ final class MapWindow implements TileMap.Listener {
         @Override
         protected void onDraw(Canvas c) {
             float s = getWidth(), r = s / 2f;
+            // Kept a pixel inside the view so the smoothed edge is never cut off by the window.
+            float edge = r - 1.5f;
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(active ? 0xFF1A73E8 : 0xF21F2428);
-            c.drawCircle(r, r, r, paint);
+            paint.setColor(active ? 0xFF1A73E8 : 0xFF1F2428);
+            c.drawCircle(r, r, edge, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(s * 0.03f);
             paint.setColor(isPressed() ? 0xFFFFFFFF : 0x40FFFFFF);
-            c.drawCircle(r, r, r - s * 0.015f, paint);
+            c.drawCircle(r, r, edge - s * 0.015f, paint);
             arrow.rewind();
             arrow.moveTo(s * 0.50f, s * 0.24f);
             arrow.lineTo(s * 0.70f, s * 0.72f);
