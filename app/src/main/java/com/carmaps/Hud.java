@@ -289,13 +289,12 @@ final class Hud {
 
     /** The now playing card or the clock, in the directions' box while no route is being followed. */
     private boolean idleCard() {
-        int idle = prefs.hudIdle();
-        return !navigating && !testing && (idle == Prefs.IDLE_MUSIC || idle == Prefs.IDLE_CLOCK);
+        return !navigating && !testing && (prefs.hudMusic() || prefs.hudClock());
     }
 
     /** Asks Spotify what's playing only while the card is up. */
     private void updatePolling() {
-        boolean want = showing() && idleCard() && prefs.hudIdle() == Prefs.IDLE_MUSIC;
+        boolean want = showing() && idleCard() && prefs.hudMusic();
         if (want == polling) return;
         polling = want;
         main.removeCallbacks(poll);
@@ -499,7 +498,7 @@ final class Hud {
      */
     private final class Panel extends ViewGroup {
         private final InfoView info;
-        private final IdleView idle;
+        private final IdleView music, clock;
         private final FrameLayout mapBox;
         private final LineView line;
         private final TileMap around;
@@ -516,8 +515,10 @@ final class Hud {
             addView(around);
             info = new InfoView(c);
             addView(info);
-            idle = new IdleView(c);
-            addView(idle);
+            music = new IdleView(c, false);
+            addView(music);
+            clock = new IdleView(c, true);
+            addView(clock);
             mapBox = new FrameLayout(c);
             line = new LineView(c);
             mapBox.addView(line, new FrameLayout.LayoutParams(
@@ -542,10 +543,12 @@ final class Hud {
             applyMapSource();
             boolean whole = surround(), card = idleCard();
             around.setVisibility(whole ? VISIBLE : GONE);
-            idle.setVisibility(card ? VISIBLE : GONE);
+            music.setVisibility(card && prefs.hudMusic() ? VISIBLE : GONE);
+            clock.setVisibility(card && prefs.hudClock() ? VISIBLE : GONE);
             info.setVisibility(whole || card ? GONE : VISIBLE);
             mapBox.setVisibility(!whole && !card && showMap() ? VISIBLE : INVISIBLE);
-            idle.invalidate();
+            music.invalidate();
+            clock.invalidate();
             requestLayout();
             invalidate();
             info.invalidate();
@@ -553,13 +556,15 @@ final class Hud {
         }
 
         void onIdle() {
-            idle.invalidate();
+            music.invalidate();
+            clock.invalidate();
         }
 
         void onNav() {
             if ((mapBox.getVisibility() == VISIBLE) != (!surround() && !idleCard() && showMap())
                     || (around.getVisibility() == VISIBLE) != surround()
-                    || (idle.getVisibility() == VISIBLE) != idleCard()) {
+                    || (music.getVisibility() == VISIBLE) != (idleCard() && prefs.hudMusic())
+                    || (clock.getVisibility() == VISIBLE) != (idleCard() && prefs.hudClock())) {
                 applyPrefs();
             }
             info.invalidate();
@@ -585,9 +590,11 @@ final class Hud {
                     MeasureSpec.makeMeasureSpec(Math.max(1, h), MeasureSpec.EXACTLY));
             info.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[2]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[6]), MeasureSpec.EXACTLY));
-            int[] k = cardRect(w, h);
-            idle.measure(MeasureSpec.makeMeasureSpec(k[2], MeasureSpec.EXACTLY),
+            int[] k = boxRect(Prefs.CARD, w, h), q = boxRect(Prefs.CLOCK, w, h);
+            music.measure(MeasureSpec.makeMeasureSpec(k[2], MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(k[3], MeasureSpec.EXACTLY));
+            clock.measure(MeasureSpec.makeMeasureSpec(q[2], MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(q[3], MeasureSpec.EXACTLY));
             mapBox.measure(MeasureSpec.makeMeasureSpec(Math.max(1, r[5]), MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(Math.max(1, r[7]), MeasureSpec.EXACTLY));
         }
@@ -597,8 +604,9 @@ final class Hud {
             int[] p = rects(r - l, b - t);
             around.layout(0, 0, r - l, b - t);
             info.layout(p[0], p[1], p[0] + Math.max(1, p[2]), p[1] + p[6]);
-            int[] k = cardRect(r - l, b - t);
-            idle.layout(k[0], k[1], k[0] + k[2], k[1] + k[3]);
+            int[] k = boxRect(Prefs.CARD, r - l, b - t), q = boxRect(Prefs.CLOCK, r - l, b - t);
+            music.layout(k[0], k[1], k[0] + k[2], k[1] + k[3]);
+            clock.layout(q[0], q[1], q[0] + q[2], q[1] + q[3]);
             mapBox.layout(p[3], p[4], p[3] + Math.max(1, p[5]), p[4] + Math.max(1, p[7]));
         }
 
@@ -625,9 +633,9 @@ final class Hud {
          *
          * @return {info left, info top, info width, map left, map top, map width, info height, map height}
          */
-        /** The now playing / clock card's box: {left, top, width, height}. */
-        private int[] cardRect(int w, int h) {
-            int[] c = prefs.hudBox(Prefs.CARD);
+        /** The now playing card's or the clock's box: {left, top, width, height}. */
+        private int[] boxRect(int which, int w, int h) {
+            int[] c = prefs.hudBox(which);
             return new int[]{w * c[0] / 1000, h * c[1] / 1000, Math.max(1, w * c[2] / 1000),
                     Math.max(1, h * c[3] / 1000)};
         }
@@ -750,8 +758,12 @@ final class Hud {
         private final java.text.DateFormat time = android.text.format.DateFormat.getTimeFormat(getContext());
         private final java.text.SimpleDateFormat date = new java.text.SimpleDateFormat("EEEE d MMMM", Locale.getDefault());
 
-        IdleView(Context c) {
+        /** True for the time and date, false for what's playing. */
+        private final boolean clockMode;
+
+        IdleView(Context c, boolean clockMode) {
             super(c);
+            this.clockMode = clockMode;
             title.setColor(0xFFFFFFFF);
             title.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
             sub.setColor(0xFFB8C4CE);
@@ -767,7 +779,7 @@ final class Hud {
         protected void onDraw(Canvas c) {
             float w = getWidth(), h = getHeight();
             float pad = Math.min(w, h) * 0.05f;
-            if (prefs.hudIdle() == Prefs.IDLE_CLOCK) {
+            if (clockMode) {
                 java.util.Date now = new java.util.Date();
                 String t = time.format(now), d = date.format(now);
                 fit(title, t, h * 0.5f, w - pad * 2);

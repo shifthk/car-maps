@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.18 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.19 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;

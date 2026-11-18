@@ -27,7 +27,7 @@ final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
     private static final String SEARCH = "https://photon.komoot.io/api/";
-    private static final String AGENT = "CarMaps/2.18 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.19 (Android; +https://github.com/shifthk/car-maps)";
     private static final String TOMTOM = "https://api.tomtom.com/";
 
     /** How the last TomTom route request went, for the settings screen. */
@@ -370,7 +370,7 @@ final class Router {
             c.setReadTimeout(20000);
             c.setRequestMethod(method);
             // The community services ask apps to say who they are; TomTom knows by the key.
-            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.18" : AGENT);
+            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.19" : AGENT);
             c.setRequestProperty("Accept", "application/json");
             if (body != null) {
                 c.setDoOutput(true);

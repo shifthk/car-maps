@@ -362,7 +362,10 @@ public class MainActivity extends Activity {
 
         section("When not following a route");
         choice("The HUD shows", new String[]{"Nothing", "Map of the roads around the car",
-                "Now playing on Spotify", "Time and date"}, prefs.hudIdle(), prefs::setHudIdle);
+                "Now playing on Spotify", "Time and date", "Now playing, and time and date"}, prefs.hudIdle(), i -> {
+            prefs.setHudIdle(i);
+            if (hudLayout != null) hudLayout.reload();
+        });
         slider("Empty circle in the middle of the map", 0, 100, prefs.hudHole(), "%", prefs::setHudHole);
         rowNote("The circle leaves room for the car's speed readout. Now playing needs the Spotify tab set up.");
 
@@ -379,9 +382,8 @@ public class MainActivity extends Activity {
                     MapService.send(MainActivity.this, MapService.ACTION_HUD_TEST);
                 } else {
                     // The card itself is already on the HUD while no route is being followed.
-                    int idle = prefs.hudIdle();
-                    if (idle != Prefs.IDLE_MUSIC && idle != Prefs.IDLE_CLOCK) {
-                        toast("Choose Now playing or Time and date above to see the card on the HUD");
+                    if (!prefs.hudMusic() && !prefs.hudClock()) {
+                        toast("Choose Now playing or Time and date above to see them on the HUD");
                     }
                 }
             }
@@ -392,8 +394,7 @@ public class MainActivity extends Activity {
             }
         });
         hudLayout = layout;
-        int idleNow = prefs.hudIdle();
-        boolean startIdle = idleNow == Prefs.IDLE_MUSIC || idleNow == Prefs.IDLE_CLOCK;
+        boolean startIdle = prefs.hudMusic() || prefs.hudClock();
         layout.setIdle(startIdle);
         segmented(new String[]{"Following a route", "Not following a route"}, startIdle ? 1 : 0,
                 i -> layout.setIdle(i == 1));

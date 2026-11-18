@@ -169,9 +169,9 @@ final class Prefs {
 
     // ---- where the two HUD panels sit: {left, top, width, height} in thousandths of the HUD's width and height
 
-    /** CARD: the now playing card or the clock, shown while no route is being followed. */
-    static final int INFO = 0, MINIMAP = 1, CARD = 2;
-    private static final String[] BOX_KEYS = {"hudBoxInfo", "hudBoxMap", "hudBoxCard"};
+    /** CARD: the now playing card, and CLOCK: the time and date, shown while no route is being followed. */
+    static final int INFO = 0, MINIMAP = 1, CARD = 2, CLOCK = 3;
+    private static final String[] BOX_KEYS = {"hudBoxInfo", "hudBoxMap", "hudBoxCard", "hudBoxClock"};
 
     int[] hudBox(int which) {
         String v = p.getString(BOX_KEYS[which], null);
@@ -186,7 +186,18 @@ final class Prefs {
         }
         // The card started out in the directions' box, so until it is moved it stays there.
         if (which == CARD) return hudBox(INFO);
+        if (which == CLOCK) {
+            // Until 2.19 the clock shared the card's box; otherwise it starts opposite the card.
+            int[] c = hudBox(CARD);
+            if (hudIdle() == IDLE_CLOCK) return c;
+            return opposite(c);
+        }
         return legacyBoxes()[which];
+    }
+
+    /** The same box mirrored to the other side of the HUD. */
+    private static int[] opposite(int[] c) {
+        return new int[]{Math.max(0, 1000 - c[0] - c[2]), c[1], c[2], c[3]};
     }
 
     void setHudBox(int which, int[] b) {
@@ -194,7 +205,7 @@ final class Prefs {
     }
 
     void resetHudBoxes() {
-        p.edit().remove(BOX_KEYS[0]).remove(BOX_KEYS[1]).remove(BOX_KEYS[2])
+        p.edit().remove(BOX_KEYS[0]).remove(BOX_KEYS[1]).remove(BOX_KEYS[2]).remove(BOX_KEYS[3])
                 .remove("hudGap").remove("hudX").remove("hudInfoSize").remove("hudInfoY")
                 .remove("hudMapW").remove("hudMapH").apply();
     }
@@ -224,11 +235,25 @@ final class Prefs {
     }
 
     /** What the HUD shows while no route is being followed. */
-    static final int IDLE_NOTHING = 0, IDLE_MAP = 1, IDLE_MUSIC = 2, IDLE_CLOCK = 3;
+    static final int IDLE_NOTHING = 0, IDLE_MAP = 1, IDLE_MUSIC = 2, IDLE_CLOCK = 3, IDLE_BOTH = 4;
 
     /** Until 2.12 there was only an on/off switch for the map. */
     int hudIdle() { return p.getInt("hudIdle", p.getBoolean("hudSurround", true) ? IDLE_MAP : IDLE_NOTHING); }
-    void setHudIdle(int v) { p.edit().putInt("hudIdle", v).apply(); }
+    void setHudIdle(int v) {
+        // The clock used to share the card's box: it keeps that spot, and the card moves to the other side.
+        if (hudIdle() == IDLE_CLOCK && v != IDLE_CLOCK && !p.contains(BOX_KEYS[CLOCK])) {
+            int[] c = hudBox(CARD);
+            setHudBox(CLOCK, c);
+            setHudBox(CARD, opposite(c));
+        }
+        p.edit().putInt("hudIdle", v).apply();
+    }
+
+    /** Now playing is on the HUD while no route is being followed. */
+    boolean hudMusic() { int i = hudIdle(); return i == IDLE_MUSIC || i == IDLE_BOTH; }
+
+    /** The time and date are on the HUD while no route is being followed. */
+    boolean hudClock() { int i = hudIdle(); return i == IDLE_CLOCK || i == IDLE_BOTH; }
 
     // ---- Spotify (the user's own app registration and the tokens from signing in; never a password)
 

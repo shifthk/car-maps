@@ -14,8 +14,8 @@ import android.view.View;
 /**
  * A small picture of the HUD on the settings screen with its panels as boxes: drag a box to move
  * it, drag its corner handle to resize it. It shows one of two arrangements at a time, since they
- * never share the HUD: the directions and mini map (following a route), or the now playing / clock
- * card (not following one). Each change is saved and sent to
+ * never share the HUD: the directions and mini map (following a route), or the now playing card
+ * and the clock (not following one). Each change is saved and sent to
  * the HUD straight away, so the real HUD follows the finger.
  */
 final class HudLayoutView extends View {
@@ -29,9 +29,9 @@ final class HudLayoutView extends View {
     }
 
     private static final int MIN = 60;   // thousandths: the smallest a box can be made
-    private static final String[] NAMES = {"Directions", "Mini map", "Now playing / clock"};
-    private static final int[] COLOURS = {0xFF35E0FF, 0xFFFFC450, 0xFF1ED760};
-    private static final int[] ROUTE = {Prefs.INFO, Prefs.MINIMAP}, IDLE = {Prefs.CARD};
+    private static final String[] NAMES = {"Directions", "Mini map", "Now playing", "Time and date"};
+    private static final int[] COLOURS = {0xFF35E0FF, 0xFFFFC450, 0xFF1ED760, 0xFFC79BFF};
+    private static final int[] ROUTE = {Prefs.INFO, Prefs.MINIMAP}, IDLE = {Prefs.CARD, Prefs.CLOCK};
     /** The boxes being arranged, bottom one first. */
     private int[] shown = ROUTE;
 
@@ -42,7 +42,7 @@ final class HudLayoutView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF hud = new RectF();
     private final RectF r = new RectF();
-    private final int[][] boxes = new int[3][];
+    private final int[][] boxes = new int[4][];
 
     private int dragging = -1;
     private boolean resizing;
@@ -66,6 +66,7 @@ final class HudLayoutView extends View {
         boxes[Prefs.INFO] = prefs.hudBox(Prefs.INFO);
         boxes[Prefs.MINIMAP] = prefs.hudBox(Prefs.MINIMAP);
         boxes[Prefs.CARD] = prefs.hudBox(Prefs.CARD);
+        boxes[Prefs.CLOCK] = prefs.hudBox(Prefs.CLOCK);
         invalidate();
     }
 
@@ -112,12 +113,11 @@ final class HudLayoutView extends View {
         }
 
         boolean mapOn = prefs.hudMap();
-        int idleMode = prefs.hudIdle();
-        boolean cardUsed = idleMode == Prefs.IDLE_MUSIC || idleMode == Prefs.IDLE_CLOCK;
         for (int i : shown) {
             boxRect(i, r);
             int colour = COLOURS[i];
-            boolean off = (i == Prefs.MINIMAP && !mapOn) || (i == Prefs.CARD && !cardUsed);
+            boolean off = (i == Prefs.MINIMAP && !mapOn) || (i == Prefs.CARD && !prefs.hudMusic())
+                    || (i == Prefs.CLOCK && !prefs.hudClock());
             paint.setStyle(Paint.Style.FILL);
             paint.setColor((colour & 0x00FFFFFF) | (i == dragging ? 0x50000000 : 0x28000000));
             c.drawRect(r, paint);
@@ -131,7 +131,7 @@ final class HudLayoutView extends View {
             c.drawRect(r.right - hs, r.bottom - hs, r.right, r.bottom, paint);
             paint.setTextSize(13 * density);
             paint.setColor(off ? 0xFF8A949E : 0xFFFFFFFF);
-            String label = !off ? NAMES[i] : i == Prefs.CARD ? NAMES[i] + " (not chosen)" : NAMES[i] + " (off)";
+            String label = !off ? NAMES[i] : i >= Prefs.CARD ? NAMES[i] + " (not chosen)" : NAMES[i] + " (off)";
             c.drawText(label, r.left + 6 * density, r.top + 17 * density, paint);
         }
     }
