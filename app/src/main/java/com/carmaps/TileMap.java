@@ -55,7 +55,7 @@ final class TileMap extends View {
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.19 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.20 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -550,6 +550,12 @@ final class TileMap extends View {
         int y0 = Math.max(0, (int) Math.floor((cy - reachY / world) * n));
         int y1 = Math.min(n - 1, (int) Math.floor((cy + reachY / world) * n));
 
+        // Room in memory for every tile this view needs and then some (the lower-zoom tiles that stand
+        // in while loading, the next row as the map moves). Too little and each tile that arrives pushes
+        // out another that's still on screen, which is then loaded again: tiles flicker on a big screen,
+        // above all with the map turned, which needs tiles out to its corners.
+        ensureRoom(memory, (x1 - x0 + 1) * (y1 - y0 + 1));
+
         int turnedBack = c.save();
         c.rotate(-rotation, ax, ay);
         for (int ty = y0; ty <= y1; ty++) {
@@ -567,6 +573,8 @@ final class TileMap extends View {
                 }
             }
         }
+
+        if (trafficKey != null && !hudStyle) ensureRoom(trafficMemory, (x1 - x0 + 1) * (y1 - y0 + 1));
 
         double[][] ox = altX, oy = altY;
         if (ox != null) {
@@ -643,6 +651,15 @@ final class TileMap extends View {
             }
             c.restoreToCount(upright);
         }
+    }
+
+    /** The most memory the tiles may take between them; their pixels live outside the Java heap. */
+    private static final int MAX_CACHE = 192 * 1024 * 1024;
+
+    /** Grows a tile cache to hold twice {@code tiles} tiles of 256 x 256, if it's smaller than that. */
+    private static void ensureRoom(LruCache<String, Bitmap> cache, int tiles) {
+        int want = (int) Math.min(MAX_CACHE, 2L * tiles * TILE * TILE * 4);
+        if (want > cache.maxSize()) cache.resize(want);
     }
 
     private void drawTile(Canvas c, int z, int x, int y) {
