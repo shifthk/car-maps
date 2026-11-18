@@ -81,7 +81,7 @@ final class MapWindow implements TileMap.Listener {
     private final LinearLayout content;
     private final IconButton icon;
     private final View grip;
-    private final int iconSize, inset, minW, minH;
+    private final int iconSize, inset, innerIcon, rowH, minW, minH;
 
     private final EditText search;
     private final TextView clear;
@@ -90,6 +90,7 @@ final class MapWindow implements TileMap.Listener {
     private final LinearLayout results;
     private final TextView recenter, trafficButton, tollButton, compass;
     private final LinearLayout chips, choices;
+    private final View searchRow, chipRow;
     private final SpeedSign speedSign;
     private final LaneStrip laneStrip;
 
@@ -118,7 +119,9 @@ final class MapWindow implements TileMap.Listener {
         this.prefs = prefs;
         this.host = host;
         iconSize = dp(80);
-        inset = dp(26);
+        inset = dp(4);
+        innerIcon = dp(56);
+        rowH = dp(64);
         minW = dp(320);
         minH = dp(300);
         collapsed = prefs.collapsed();
@@ -140,18 +143,16 @@ final class MapWindow implements TileMap.Listener {
             }
         });
         content.setElevation(dp(6));
-        // Room at the top and right so the button sits on the map's corner instead of over its controls.
-        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        clp.setMargins(dp(4), inset, inset, dp(4));
-        frame.addView(content, clp);
+        // The round button sits inside the window, at the right of the search row.
+        frame.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // ---- search row
         LinearLayout top = new LinearLayout(ui);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setBackgroundColor(0xFF262B31);
-        top.setPadding(dp(16), 0, dp(58), 0);   // clear of the round button on the right
+        top.setPadding(dp(16), 0, dp(4) + innerIcon, 0);   // clear of the round button on the right
         search = new EditText(ui);
         search.setHint("Search for a place");
         search.setHintTextColor(0xFF9AA4AE);
@@ -183,13 +184,14 @@ final class MapWindow implements TileMap.Listener {
             public void onDestroyActionMode(android.view.ActionMode mode) {
             }
         });
-        top.addView(search, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        top.addView(search, new LinearLayout.LayoutParams(0, rowH, 1f));
         clear = label(26, false);
         clear.setText("×");
         clear.setGravity(Gravity.CENTER);
         clear.setTextColor(0xFFB6C0CA);
         clear.setVisibility(View.GONE);
-        top.addView(clear, new LinearLayout.LayoutParams(dp(52), dp(56)));
+        top.addView(clear, new LinearLayout.LayoutParams(dp(52), rowH));
+        searchRow = top;
         content.addView(top, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -201,6 +203,7 @@ final class MapWindow implements TileMap.Listener {
         chips.setOrientation(LinearLayout.HORIZONTAL);
         chips.setPadding(dp(10), dp(6), dp(10), dp(6));
         chipScroll.addView(chips);
+        chipRow = chipScroll;
         content.addView(chipScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -320,7 +323,9 @@ final class MapWindow implements TileMap.Listener {
 
         icon = new IconButton(ui);
         icon.setElevation(dp(8));
-        frame.addView(icon, new FrameLayout.LayoutParams(iconSize, iconSize, Gravity.TOP | Gravity.END));
+        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(innerIcon, innerIcon, Gravity.TOP | Gravity.END);
+        ilp.setMargins(0, (rowH - innerIcon) / 2, inset, 0);
+        frame.addView(icon, ilp);
         icon.setOnTouchListener(new MoveTouch());
 
         wireSearch();
@@ -537,6 +542,9 @@ final class MapWindow implements TileMap.Listener {
     void setGuiding(boolean on) {
         guiding = on;
         icon.setActive(on);
+        // While guiding the turn bar does the talking: no search box or saved places taking up the map.
+        searchRow.setVisibility(on ? View.GONE : View.VISIBLE);
+        chipRow.setVisibility(on ? View.GONE : View.VISIBLE);
         if (on) {
             choices.setVisibility(View.GONE);
             map.setFollow(true);
@@ -894,11 +902,20 @@ final class MapWindow implements TileMap.Listener {
     private void apply() {
         content.setVisibility(collapsed ? View.GONE : View.VISIBLE);
         grip.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        FrameLayout.LayoutParams ilp = (FrameLayout.LayoutParams) icon.getLayoutParams();
+        int size = collapsed ? iconSize : innerIcon;
+        ilp.width = size;
+        ilp.height = size;
+        ilp.topMargin = collapsed ? 0 : (rowH - innerIcon) / 2;
+        ilp.rightMargin = collapsed ? 0 : inset;
+        icon.setLayoutParams(ilp);
         if (collapsed) {
+            // Centred on the same spot as the button inside the map, so it doesn't jump when tapped.
+            int cx = x + w - inset - innerIcon / 2, cy = y + rowH / 2;
             lp.width = iconSize;
             lp.height = iconSize;
-            lp.x = x + w - iconSize;
-            lp.y = y;
+            lp.x = Math.max(0, Math.min(screenW - iconSize, cx - iconSize / 2));
+            lp.y = Math.max(0, Math.min(screenH - iconSize, cy - iconSize / 2));
         } else {
             lp.width = w;
             lp.height = h;
