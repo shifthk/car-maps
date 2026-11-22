@@ -27,7 +27,7 @@ final class Router {
 
     private static final String ROUTE = "https://valhalla1.openstreetmap.de/route";
     private static final String SEARCH = "https://photon.komoot.io/api/";
-    private static final String AGENT = "CarMaps/2.20 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.21 (Android; +https://github.com/shifthk/car-maps)";
     private static final String TOMTOM = "https://api.tomtom.com/";
 
     /** How the last TomTom route request went, for the settings screen. */
@@ -54,15 +54,25 @@ final class Router {
      */
     static List<Nav.Route> find(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String tomtomKey,
                                 int alternatives) throws IOException, JSONException {
+        return find(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, null);
+    }
+
+    /**
+     * @param along the way the driver usually goes (the rest of it from here), for the route to follow;
+     *              null for the router's own choice. With one, no alternatives are asked for.
+     */
+    static List<Nav.Route> find(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String tomtomKey,
+                                int alternatives, UsualRoutes.Way along) throws IOException, JSONException {
+        if (along != null) alternatives = 0;
         if (!tomtomKey.isEmpty()) {
             try {
                 JSONArray found;
                 try {
-                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, true);
+                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, true, along);
                 } catch (HttpError e) {
                     if (e.code != 400) throw e;
                     // TomTom turned down one of the extras (tolls, limits, lanes): ask for the plain route.
-                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, false);
+                    found = tomtom(from, to, avoidTolls, avoidHighways, tomtomKey, alternatives, false, along);
                 }
                 List<Nav.Route> out = new ArrayList<>();
                 for (int i = 0; i < found.length(); i++) {
@@ -82,7 +92,7 @@ final class Router {
             }
         }
         List<Nav.Route> out = new ArrayList<>();
-        List<JSONObject> trips = route(from, to, avoidTolls, avoidHighways, alternatives);
+        List<JSONObject> trips = route(from, to, avoidTolls, avoidHighways, alternatives, along);
         for (int i = 0; i < trips.size(); i++) {
             try {
                 out.add(Nav.Route.parse(trips.get(i)));
@@ -95,7 +105,8 @@ final class Router {
 
     /** @return "routes" from TomTom's Calculate Route, with text instructions */
     private static JSONArray tomtom(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, String key,
-                                    int alternatives, boolean extras) throws IOException, JSONException {
+                                    int alternatives, boolean extras, UsualRoutes.Way along)
+            throws IOException, JSONException {
         StringBuilder url = new StringBuilder(TOMTOM).append(String.format(Locale.US,
                 "routing/1/calculateRoute/%.6f,%.6f:%.6f,%.6f/json", from.getLatitude(), from.getLongitude(),
                 to.lat, to.lng));
@@ -110,11 +121,47 @@ final class Router {
         if (from.hasBearing() && from.hasSpeed() && from.getSpeed() > 3f) {
             url.append("&vehicleHeading=").append(Math.round(from.getBearing()) % 360);
         }
-        String answer = http("GET", url.toString(), null);
+        String answer;
+        if (along == null) {
+            answer = http("GET", url.toString(), null);
+        } else {
+            // TomTom rebuilds a route through "supporting points": the start, the usual way, the destination.
+            JSONArray pts = new JSONArray();
+            pts.put(point(from.getLatitude(), from.getLongitude()));
+            for (double[] p : sample(along, 150, 400)) pts.put(point(p[0], p[1]));
+            pts.put(point(to.lat, to.lng));
+            answer = http("POST", url.toString(), new JSONObject().put("supportingPoints", pts).toString());
+        }
         Usage.add(Usage.ROUTE);
         JSONArray routes = new JSONObject(answer).optJSONArray("routes");
         if (routes == null || routes.length() == 0) throw new IOException("No route found.");
         return routes;
+    }
+
+    private static JSONObject point(double lat, double lng) throws JSONException {
+        return new JSONObject().put("latitude", lat).put("longitude", lng);
+    }
+
+    /**
+     * Points along a usual way, about {@code spacing} metres apart (further if there would be more than
+     * {@code max}), leaving out the first and last couple of hundred metres, where the start and
+     * destination themselves take over. Each is {lat, lng, heading to the next point}.
+     */
+    static List<double[]> sample(UsualRoutes.Way w, double spacing, int max) {
+        double total = UsualRoutes.length(w.lat, w.lng);
+        double step = Math.max(spacing, total / max);
+        List<double[]> out = new ArrayList<>();
+        double run = 0, next = Math.min(200, total / 4);
+        for (int i = 1; i < w.lat.length; i++) {
+            run += Geo.dist(w.lat[i - 1], w.lng[i - 1], w.lat[i], w.lng[i]);
+            if (run >= next && run <= total - 200) {
+                int j = Math.min(w.lat.length - 1, i + 1);
+                double heading = j == i ? 0 : Geo.bearing(w.lat[i], w.lng[i], w.lat[j], w.lng[j]);
+                out.add(new double[]{w.lat[i], w.lng[i], heading});
+                next = run + step;
+            }
+        }
+        return out;
     }
 
     /** Something on the road that TomTom is reporting: a crash, roadworks, a closure. */
@@ -231,17 +278,24 @@ final class Router {
     }
 
     /** @return Valhalla's "trip" for the best driving route, followed by those of any alternatives */
-    static List<JSONObject> route(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, int alternatives)
-            throws IOException, JSONException {
+    static List<JSONObject> route(Location from, Dest to, boolean avoidTolls, boolean avoidHighways, int alternatives,
+                                  UsualRoutes.Way along) throws IOException, JSONException {
         JSONObject origin = new JSONObject().put("lat", from.getLatitude()).put("lon", from.getLongitude());
         // While moving, say which way the car is facing so the route doesn't start with a U-turn.
         if (from.hasBearing() && from.hasSpeed() && from.getSpeed() > 3f) {
             origin.put("heading", Math.round(from.getBearing()) % 360).put("heading_tolerance", 60);
         }
+        JSONArray locations = new JSONArray().put(origin);
+        if (along != null) {
+            // The usual way as points to drive through (not stops), each facing the way the car went.
+            for (double[] p : sample(along, 2000, 15)) {
+                locations.put(new JSONObject().put("lat", p[0]).put("lon", p[1]).put("type", "through")
+                        .put("heading", Math.round(p[2]) % 360).put("heading_tolerance", 45));
+            }
+        }
+        locations.put(new JSONObject().put("lat", to.lat).put("lon", to.lng));
         JSONObject body = new JSONObject()
-                .put("locations", new JSONArray()
-                        .put(origin)
-                        .put(new JSONObject().put("lat", to.lat).put("lon", to.lng)))
+                .put("locations", locations)
                 .put("costing", "auto")
                 .put("units", "kilometers")
                 .put("language", language())
@@ -370,7 +424,7 @@ final class Router {
             c.setReadTimeout(20000);
             c.setRequestMethod(method);
             // The community services ask apps to say who they are; TomTom knows by the key.
-            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.20" : AGENT);
+            c.setRequestProperty("User-Agent", url.startsWith(TOMTOM) ? "CarMaps/2.21" : AGENT);
             c.setRequestProperty("Accept", "application/json");
             if (body != null) {
                 c.setDoOutput(true);

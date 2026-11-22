@@ -124,6 +124,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
     private boolean routePending;
     private long lastRouteRequest;
     private int offRouteCount;
+    /** The usual way being followed (the rest of it, as of the last route), or null. */
+    private UsualRoutes.Way usualWay;
+    /** Where the car has been since guidance started, for learning the way it went. */
+    private final List<double[]> driven = new ArrayList<>();
     /** Which spoken prompts have been given for the coming turn: 0 none, 1 the early one, 2 the final one. */
     private int spokenStage;
     private int spokenStep = -1;
@@ -310,6 +314,10 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         double lat = l.getLatitude(), lng = l.getLongitude();
         hud.setCar(lat, lng, (float) bearing);
         if (navigating && nav != null) {
+            if (gps && (!l.hasAccuracy() || l.getAccuracy() <= 40f) && driven.size() < 20000) {
+                double[] prev = driven.isEmpty() ? null : driven.get(driven.size() - 1);
+                if (prev == null || Geo.dist(prev[0], prev[1], lat, lng) >= 20) driven.add(new double[]{lat, lng});
+            }
             Nav.Progress p = nav.update(lat, lng, l.hasAccuracy() ? l.getAccuracy() : 0f);
             if (p.offRoute) {
                 offRouteCount++;
@@ -324,6 +332,7 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
                 window.setCar(lat, lng, bearing);
                 say("You have arrived");
                 String name = dest == null ? "" : dest.name;
+                learnWay();
                 endNav();
                 window.showMessage("You have arrived", name);
                 return;
@@ -505,6 +514,9 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         nav = new Nav(route);
         navigating = true;
         offRouteCount = 0;
+        usualWay = route.usual;
+        driven.clear();
+        if (last != null) driven.add(new double[]{last.getLatitude(), last.getLongitude()});
         spokenStep = -1;
         spokenStage = 0;
         main.removeCallbacks(trafficRefresh);
@@ -523,6 +535,11 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
 
     @Override
     public void stopNav() {
+        // Ended within sight of the destination: that's still the way to get there.
+        Location l = last;
+        if (l != null && dest != null && Geo.dist(l.getLatitude(), l.getLongitude(), dest.lat, dest.lng) < 300) {
+            learnWay();
+        }
         endNav();
         // Back to the overview of the same route, ready to start again.
         if (route != null && dest != null) {
@@ -563,6 +580,8 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         routePending = false;
         navigating = false;
         nav = null;
+        usualWay = null;
+        driven.clear();
         main.removeCallbacks(trafficRefresh);
         window.setGuiding(false);
         hud.setNav(null);
@@ -573,9 +592,67 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         String traffic = !route.traffic ? (prefs.tomtomKey().isEmpty() ? "" : "  ·  no traffic data")
                 : route.trafficDelaySec >= 60 ? "  ·  +" + Geo.duration(route.trafficDelaySec) + " traffic"
                 : "  ·  live traffic";
+        String usual = "";
+        if (route.usual != null) {
+            usual = "  ·  your usual way";
+        } else {
+            for (Nav.Route r : routes) {
+                if (r.usual == null) continue;
+                double slower = r.durationSec - route.durationSec;
+                if (slower >= 60) usual = "  ·  usual way +" + Geo.duration(slower) + " today";
+            }
+        }
         window.showOffer(dest.name, Geo.duration(route.durationSec) + "  ·  " + Geo.distance(route.totalDist)
                 + "  ·  arrive " + Geo.clock(System.currentTimeMillis() + (long) (route.durationSec * 1000))
-                + traffic + (route.hasTolls ? "  ·  tolls" : ""));
+                + traffic + (route.hasTolls ? "  ·  tolls" : "") + usual);
+    }
+
+    /** Files the way the car went on the journey just finished. */
+    private void learnWay() {
+        if (!prefs.usualRoutes() || dest == null || driven.size() < 2) return;
+        final List<double[]> path = new ArrayList<>(driven);
+        final Router.Dest to = dest;
+        io.execute(() -> UsualRoutes.get(this).remember(path, to.lat, to.lng, to.name));
+    }
+
+    /**
+     * Puts the route that follows the usual way first and drops any other that is really the same way.
+     *
+     * @return the index to choose: the usual way, unless it's a good deal slower today than the best
+     */
+    private static int withUsual(List<Nav.Route> found, Nav.Route usual) {
+        if (usual == null) return 0;
+        Nav.Route best = found.isEmpty() ? null : found.get(0);
+        for (int i = found.size() - 1; i >= 0; i--) {
+            Nav.Route r = found.get(i);
+            double[][] a = thinned(r), b = thinned(usual);
+            if (UsualRoutes.overlap(a[0], a[1], usual.lat, usual.lng) > 0.9
+                    && UsualRoutes.overlap(b[0], b[1], r.lat, r.lng) > 0.9) {
+                found.remove(i);
+            }
+        }
+        found.add(0, usual);
+        if (best == null || best == usual || !found.contains(best)) return 0;
+        double margin = Math.max(300, best.durationSec * 0.2);
+        return usual.durationSec > best.durationSec + margin ? found.indexOf(best) : 0;
+    }
+
+    /** About one point every 100 m of a route's line, enough to compare two routes. */
+    private static double[][] thinned(Nav.Route r) {
+        List<double[]> pts = new ArrayList<>();
+        double lastAt = -1e9;
+        for (int i = 0; i < r.lat.length; i++) {
+            if (r.cum[i] - lastAt >= 100 || i == r.lat.length - 1) {
+                pts.add(new double[]{r.lat[i], r.lng[i]});
+                lastAt = r.cum[i];
+            }
+        }
+        double[][] out = new double[2][pts.size()];
+        for (int i = 0; i < pts.size(); i++) {
+            out[0][i] = pts.get(i)[0];
+            out[1][i] = pts.get(i)[1];
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ routes
@@ -595,13 +672,44 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         final String key = prefs.tomtomKey();
         // Before setting off, ask for a couple of other routes to choose between.
         final int others = !navigating && !refresh ? 2 : 0;
+        // The way the driver usually goes: looked up before setting off; while driving, the rest of the
+        // one being followed, as long as the car is still on it.
+        UsualRoutes.Way way = null;
+        if (prefs.usualRoutes()) {
+            if (!navigating) {
+                way = UsualRoutes.get(this).find(from.getLatitude(), from.getLongitude(), to.lat, to.lng);
+            } else if (usualWay != null) {
+                way = UsualRoutes.rest(usualWay, from.getLatitude(), from.getLongitude());
+                if (way == null) usualWay = null;   // gone another way: the router's choice from here
+            }
+        }
+        final UsualRoutes.Way along = way;
+        final boolean driving = navigating;
         routePending = true;
         lastRouteRequest = SystemClock.elapsedRealtime();
         io.execute(() -> {
             try {
-                final List<Nav.Route> found = Router.find(from, to, tolls, highways, key, others);
+                Nav.Route usual = null;
+                if (along != null) {
+                    try {
+                        usual = Router.find(from, to, tolls, highways, key, 0, along).get(0);
+                        usual.usual = along;
+                        // Much longer than the way itself means the router looped round to meet a point.
+                        double wayLength = UsualRoutes.length(along.lat, along.lng);
+                        if (usual.totalDist > wayLength * 1.25 + 500) {
+                            Log.w(TAG, "Usual route came back too long: " + usual.totalDist + " m for " + wayLength);
+                            usual = null;
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Usual route failed", e);
+                    }
+                }
+                final List<Nav.Route> found = new ArrayList<>();
+                // While driving, the usual way is the only route wanted, if there is one.
+                if (usual == null || !driving) found.addAll(Router.find(from, to, tolls, highways, key, others));
+                final int chosen = withUsual(found, usual);
                 main.post(() -> {
-                    if (seq == routeSeq) onRoute(found, refresh);
+                    if (seq == routeSeq) onRoute(found, refresh, chosen);
                 });
             } catch (Exception e) {
                 Log.w(TAG, "Route failed", e);
@@ -615,8 +723,8 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         });
     }
 
-    private void onRoute(List<Nav.Route> all, boolean refresh) {
-        Nav.Route found = all.get(0);
+    private void onRoute(List<Nav.Route> all, boolean refresh, int chosen) {
+        Nav.Route found = all.get(navigating ? 0 : chosen);
         routePending = false;
         // A traffic re-check that had to fall back to the router without traffic tells us nothing new,
         // and one that arrives after the car has left the route is already out of date.
@@ -624,10 +732,11 @@ public class MapService extends Service implements MapWindow.Host, LocationListe
         route = found;
         if (!navigating) {
             routes = all;
-            window.showRoutes(all, 0, true);
+            window.showRoutes(all, chosen, true);
             offer();
             return;
         }
+        if (found.usual != null) usualWay = found.usual;
         routes = new ArrayList<>();
         routes.add(found);
         // A new route while driving: carry straight on with it.

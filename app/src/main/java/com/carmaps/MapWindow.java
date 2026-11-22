@@ -493,7 +493,8 @@ final class MapWindow implements TileMap.Listener {
             t.setSingleLine(false);
             t.setMaxLines(2);
             t.setGravity(Gravity.CENTER);
-            t.setText(Geo.duration(o.durationSec) + "\n" + Geo.distance(o.totalDist) + (o.hasTolls ? "  ·  tolls" : ""));
+            t.setText((o.usual != null ? "Usual  ·  " : "") + Geo.duration(o.durationSec) + "\n"
+                    + Geo.distance(o.totalDist) + (o.hasTolls ? "  ·  tolls" : ""));
             GradientDrawable bg = new GradientDrawable();
             bg.setCornerRadius(dp(12));
             bg.setColor(i == chosen ? 0xFF1A73E8 : 0xFF2F363E);

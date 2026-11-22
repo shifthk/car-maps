@@ -23,6 +23,10 @@ final class Prefs {
     void setAvoidTolls(boolean v) { p.edit().putBoolean("avoidTolls", v).apply(); }
 
     boolean avoidHighways() { return p.getBoolean("avoidHighways", false); }
+
+    /** Remember the routes driven to the end, and offer them first next time. */
+    boolean usualRoutes() { return p.getBoolean("usualRoutes", true); }
+    void setUsualRoutes(boolean v) { p.edit().putBoolean("usualRoutes", v).apply(); }
     void setAvoidHighways(boolean v) { p.edit().putBoolean("avoidHighways", v).apply(); }
 
     /** Map colours: 0 light, 1 dark, 2 dark between sunset and sunrise, 3 follow the car's day/night theme. */

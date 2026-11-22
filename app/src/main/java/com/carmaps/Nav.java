@@ -41,6 +41,8 @@ final class Nav {
         double[][] limits = new double[0][];
         /** The stretches before junctions where the router says which lanes to be in. */
         final List<LaneSpot> lanes = new ArrayList<>();
+        /** The way the driver usually goes, when this route was made to follow it; otherwise null. */
+        UsualRoutes.Way usual;
 
         /** @param r one entry of "routes" in a TomTom Calculate Route response asked for with text instructions */
         static Route parseTomTom(JSONObject r) throws JSONException {

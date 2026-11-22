@@ -295,6 +295,20 @@ public class MainActivity extends Activity {
         toggle("Avoid tolls", null, prefs.avoidTolls(), prefs::setAvoidTolls);
         toggle("Avoid highways", null, prefs.avoidHighways(), prefs::setAvoidHighways);
 
+        section("Your usual routes");
+        toggle("Learn and use my usual routes", "Each route you follow to the end is remembered. Next time you go "
+                + "there from along the way, it's offered first.", prefs.usualRoutes(), prefs::setUsualRoutes);
+        statusRow("Learned", () -> {
+            int n = UsualRoutes.get(this).size();
+            return n == 0 ? "None yet" : n == 1 ? "1 route" : n + " routes";
+        }, s -> s.startsWith("None") ? OFF : GOOD);
+        rowNote("If you usually take a different way, it wins after you've driven it a couple of times. "
+                + "Kept on this device only.");
+        padded(button("Forget my usual routes", false, v -> {
+            UsualRoutes.get(this).forgetAll();
+            toast("Usual routes forgotten");
+        }));
+
         section("Floating window");
         toggle("Start with the car", "Opens the floating map when the car starts (needs location all the time)",
                 prefs.startOnBoot(), prefs::setStartOnBoot);
