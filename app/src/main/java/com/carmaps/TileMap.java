@@ -51,11 +51,15 @@ final class TileMap extends View {
         void onLongPress(double lat, double lng);
 
         void onTap();
+
+        /** The map was turned by hand, or put back to north up. */
+        default void onRotated() {
+        }
     }
 
     private static final String TAG = "TileMap";
     private static final String TILES = "https://tile.openstreetmap.org/";
-    private static final String AGENT = "CarMaps/2.21 (Android; +https://github.com/shifthk/car-maps)";
+    private static final String AGENT = "CarMaps/2.22 (Android; +https://github.com/shifthk/car-maps)";
     private static final int TILE = 256;
     private static final int MIN_ZOOM = 2, MAX_ZOOM = 19;
     private static final long KEEP_MS = 14L * 24 * 60 * 60 * 1000;
@@ -154,6 +158,12 @@ final class TileMap extends View {
     private boolean haveBearing;
     /** Turn the map so the car's heading is up while following it. */
     private boolean headingUp;
+    /** How far the map is turned by hand (degrees, as {@link #rotation}) while not following the car. */
+    private float userRotation;
+    /** A two-finger twist: under way once the fingers have turned far enough, so a pinch alone doesn't turn the map. */
+    private boolean twisting;
+    private double twistStart, twistLast;
+    private static final double TWIST_START_DEG = 12, SNAP_NORTH_DEG = 6;
     /** How the last drawing was turned (degrees) and where on the view the map's centre was put. */
     private float rotation, ax, ay;
     private double[][] altX, altY;
@@ -178,6 +188,7 @@ final class TileMap extends View {
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
+                stopFollowing();
                 double world = worldSize();
                 // If the map is turned, a drag across the screen is a drag at an angle across the map.
                 double r = Math.toRadians(rotation);
@@ -189,6 +200,7 @@ final class TileMap extends View {
 
             @Override
             public boolean onDoubleTap(MotionEvent e) {
+                stopFollowing();
                 zoomAbout(1, e.getX(), e.getY());
                 moved();
                 return true;
@@ -214,6 +226,7 @@ final class TileMap extends View {
         pinch = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScale(ScaleGestureDetector d) {
+                stopFollowing();
                 zoomAbout(Math.log(d.getScaleFactor()) / Math.log(2), d.getFocusX(), d.getFocusY());
                 moved();
                 return true;
@@ -323,6 +336,10 @@ final class TileMap extends View {
     /** Keep the car in the middle of the view as it moves. */
     void setFollow(boolean on) {
         follow = on;
+        if (on && userRotation != 0f) {
+            userRotation = 0f;
+            if (listener != null) listener.onRotated();
+        }
         if (on && haveCar) {
             cx = carX;
             cy = carY;
@@ -441,6 +458,7 @@ final class TileMap extends View {
         double spanX = Math.max(maxX - minX, 1e-7), spanY = Math.max(maxY - minY, 1e-7);
         double perUnit = Math.min(getWidth() * 0.78 / spanX, getHeight() * 0.74 / spanY);
         follow = false;
+        resetNorth();
         cx = (minX + maxX) / 2;
         cy = (minY + maxY) / 2;
         setZoom(Math.min(16.5, Math.log(perUnit / (TILE * tileScale)) / Math.log(2)));
@@ -448,6 +466,7 @@ final class TileMap extends View {
 
     void centerOn(double lat, double lng, double atLeastZoom) {
         follow = false;
+        resetNorth();
         cx = xOf(lng);
         cy = yOf(lat);
         if (zoom < atLeastZoom) zoom = atLeastZoom;
@@ -475,12 +494,87 @@ final class TileMap extends View {
     }
 
     private void zoomAbout(double steps, float fx, float fy) {
-        double before = worldSize();
-        double px = cx + (fx - getWidth() / 2f) / before, py = cy + (fy - getHeight() / 2f) / before;
+        double[] p = mapPoint(fx, fy);
         zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom + steps));
-        double after = worldSize();
-        cx = px - (fx - getWidth() / 2f) / after;
-        cy = py - (fy - getHeight() / 2f) / after;
+        keepAt(p, fx, fy);
+        invalidate();
+    }
+
+    /** Where on the map (0..1 x and y) the screen point (sx, sy) is, as the map is drawn now. */
+    private double[] mapPoint(float sx, float sy) {
+        double world = worldSize(), r = Math.toRadians(rotation);
+        double dx = sx - pivotX(), dy = sy - pivotY();
+        return new double[]{cx + (dx * Math.cos(r) - dy * Math.sin(r)) / world,
+                cy + (dx * Math.sin(r) + dy * Math.cos(r)) / world};
+    }
+
+    /** Moves the map so that map point {@code p} is at screen point (sx, sy). */
+    private void keepAt(double[] p, float sx, float sy) {
+        double world = worldSize(), r = Math.toRadians(rotation);
+        double dx = sx - pivotX(), dy = sy - pivotY();
+        cx = p[0] - (dx * Math.cos(r) - dy * Math.sin(r)) / world;
+        cy = p[1] - (dx * Math.sin(r) + dy * Math.cos(r)) / world;
+    }
+
+    /** The point the map turns about and centres on: set by drawing, or the middle before the first drawing. */
+    private float pivotX() {
+        return ax != 0 ? ax : getWidth() / 2f;
+    }
+
+    private float pivotY() {
+        return ay != 0 ? ay : getHeight() / 2f;
+    }
+
+    /**
+     * The user has taken over: stop following the car, keeping the view exactly as it is (the same
+     * place in the middle, the same turn), so nothing jumps.
+     */
+    private void stopFollowing() {
+        if (!follow) return;
+        double[] middle = mapPoint(getWidth() / 2f, getHeight() / 2f);
+        follow = false;
+        userRotation = rotation;
+        ax = getWidth() / 2f;
+        ay = getHeight() / 2f;
+        cx = middle[0];
+        cy = middle[1];
+        if (listener != null) listener.onRotated();
+    }
+
+    /** Turns the map by {@code degrees} (content clockwise for positive) about screen point (fx, fy). */
+    private void turnAbout(double degrees, float fx, float fy) {
+        stopFollowing();
+        double[] p = mapPoint(fx, fy);
+        userRotation = normal((float) (userRotation - degrees));
+        rotation = userRotation;
+        keepAt(p, fx, fy);
+        if (listener != null) listener.onRotated();
+        invalidate();
+    }
+
+    private static float normal(float deg) {
+        float d = deg % 360;
+        if (d > 180) d -= 360;
+        if (d <= -180) d += 360;
+        return d;
+    }
+
+    /** True while the map is turned by hand away from north. */
+    boolean isTurnedByHand() {
+        return !follow && userRotation != 0f;
+    }
+
+    /** How far the map is turned by hand, in degrees (clockwise from north up is negative). */
+    float handRotation() {
+        return follow ? 0f : userRotation;
+    }
+
+    /** Back to north up, about the middle of the view. */
+    void resetNorth() {
+        if (userRotation == 0f) return;
+        userRotation = 0f;
+        if (!follow) rotation = 0f;
+        if (listener != null) listener.onRotated();
         invalidate();
     }
 
@@ -493,9 +587,40 @@ final class TileMap extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        twist(e);
         pinch.onTouchEvent(e);
         if (!pinch.isInProgress()) gestures.onTouchEvent(e);
         return true;
+    }
+
+    /** Two fingers turning about each other turn the map with them. */
+    private void twist(MotionEvent e) {
+        int action = e.getActionMasked();
+        if (e.getPointerCount() < 2) {
+            twisting = false;
+            return;
+        }
+        double angle = Math.toDegrees(Math.atan2(e.getY(1) - e.getY(0), e.getX(1) - e.getX(0)));
+        float fx = (e.getX(0) + e.getX(1)) / 2f, fy = (e.getY(0) + e.getY(1)) / 2f;
+        if (action == MotionEvent.ACTION_POINTER_DOWN) {
+            twistStart = twistLast = angle;
+            twisting = false;
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            if (!twisting) {
+                if (Math.abs(normal((float) (angle - twistStart))) >= TWIST_START_DEG) {
+                    twisting = true;
+                    twistLast = angle;
+                }
+                return;
+            }
+            double d = normal((float) (angle - twistLast));
+            twistLast = angle;
+            if (d != 0) turnAbout(d, fx, fy);
+        } else if (action == MotionEvent.ACTION_POINTER_UP) {
+            // Let go nearly straight: snap to north up.
+            if (twisting && Math.abs(userRotation) < SNAP_NORTH_DEG && userRotation != 0f) turnAbout(userRotation, fx, fy);
+            twisting = false;
+        }
     }
 
     @Override
@@ -533,7 +658,7 @@ final class TileMap extends View {
         // While following the car the map can be turned so the way ahead is up, with the car low in
         // the view so more of the road ahead shows. Otherwise north is up and the centre is the centre.
         boolean turned = headingUp && follow && haveCar;
-        rotation = turned ? carBearing : 0f;
+        rotation = turned ? carBearing : follow ? 0f : userRotation;
         ax = w / 2f;
         ay = turned ? h * turnedAnchor : h / 2f;
 

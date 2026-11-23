@@ -10,8 +10,8 @@ android {
         applicationId = "com.carmaps"
         minSdk = 28
         targetSdk = 34
-        versionCode = 25
-        versionName = "2.21"
+        versionCode = 26
+        versionName = "2.22"
     }
 
     buildTypes {

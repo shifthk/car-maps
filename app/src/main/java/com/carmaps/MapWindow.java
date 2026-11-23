@@ -231,8 +231,13 @@ final class MapWindow implements TileMap.Listener {
 
         LinearLayout left = new LinearLayout(ui);
         left.setOrientation(LinearLayout.VERTICAL);
-        // North up, or turned so the way ahead is up while following the car.
+        // North up, or turned so the way ahead is up while following the car. Once the map has been
+        // turned by hand, it points north and a tap puts north back at the top.
         compass = roundButton("N", v -> {
+            if (map.isTurnedByHand()) {
+                map.resetNorth();
+                return;
+            }
             prefs.setHeadingUp(!prefs.headingUp());
             refresh();
         });
@@ -396,10 +401,8 @@ final class MapWindow implements TileMap.Listener {
 
     /** Settings changed. */
     void refresh() {
-        boolean up = prefs.headingUp();
-        map.setHeadingUp(up);
-        compass.setText(up ? "▲" : "N");
-        compass.setTextColor(up ? 0xFF4C9BFF : 0xFFFFFFFF);
+        map.setHeadingUp(prefs.headingUp());
+        updateCompass();
         refreshSaved();
         String key = prefs.tomtomKey();
         boolean on = !key.isEmpty() && prefs.traffic();
@@ -577,6 +580,26 @@ final class MapWindow implements TileMap.Listener {
     /** The recentre button is lit while the map is following the car. */
     private void updateRecenter() {
         recenter.setTextColor(map.isFollowing() ? 0xFF4C9BFF : 0xFFFFFFFF);
+        updateCompass();
+    }
+
+    @Override
+    public void onRotated() {
+        updateCompass();
+    }
+
+    /** ▲ while the way ahead is up, N otherwise; turned by hand, a red N pointing north. */
+    private void updateCompass() {
+        if (map.isTurnedByHand()) {
+            compass.setText("N");
+            compass.setTextColor(0xFFFF6B5A);
+            compass.setRotation(-map.handRotation());
+            return;
+        }
+        boolean up = prefs.headingUp();
+        compass.setRotation(0);
+        compass.setText(up ? "▲" : "N");
+        compass.setTextColor(up ? 0xFF4C9BFF : 0xFFFFFFFF);
     }
 
     // ------------------------------------------------------------------ search
